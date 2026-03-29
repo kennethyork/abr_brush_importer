@@ -3,8 +3,7 @@ Network utility helpers for the ABR Brush Importer plugin.
 
 Provides:
   - URL-based cache key computation (hash of URL)
-  - Download of .abr or .zip files from a URL with size limit
-  - Safe extraction of .abr files from zip archives (zip-slip prevention)
+  - Download of .abr files from a URL with size limit
   - Cache directory management (get path, list cached files, clear)
 
 All networking uses only the Python standard library (urllib.request).
@@ -209,13 +208,12 @@ def fetch_abr(
     timeout: int = DOWNLOAD_TIMEOUT,
     progress_callback=None,
 ) -> list:
-    """Download (or retrieve from cache) the ABR file(s) at *url*.
+    """Download (or retrieve from cache) the ABR file at *url*.
 
-    Handles both direct ``.abr`` URLs and ``.zip`` archives containing
-    ``.abr`` files.
+    Only direct ``.abr`` URLs are supported.  ZIP archives are rejected.
 
     Args:
-        url: HTTP/HTTPS URL pointing to a ``.abr`` or ``.zip`` file.
+        url: HTTP/HTTPS URL pointing to a ``.abr`` file.
         resource_dir: Krita writable resource directory used as the cache root.
         force_refresh: If ``True``, re-download even if the file is cached.
         max_bytes: Maximum download size in bytes.
@@ -223,11 +221,11 @@ def fetch_abr(
         progress_callback: Forwarded to :func:`download_url`.
 
     Returns:
-        A list of absolute paths to ``.abr`` files ready for parsing.
+        A list containing the absolute path to the downloaded ``.abr`` file.
 
     Raises:
         urllib.error.URLError: On network errors.
-        ValueError: On oversized downloads or bad zip archives.
+        ValueError: On oversized downloads or if the URL points to a ZIP archive.
     """
     import posixpath
     import urllib.parse
@@ -254,17 +252,8 @@ def fetch_abr(
     # Decide what to do based on the downloaded file type
     lower_name = raw_filename.lower()
     if lower_name.endswith(".zip") or _is_zip(dest_path):
-        abr_extract_dir = os.path.join(cache_dir, f"{url_cache_key(url)}_extracted")
-        if force_refresh and os.path.isdir(abr_extract_dir):
-            import shutil
-            shutil.rmtree(abr_extract_dir)
-        # Always re-extract if the directory is missing or empty
-        if not os.path.isdir(abr_extract_dir) or not os.listdir(abr_extract_dir):
-            return extract_abr_from_zip(dest_path, abr_extract_dir)
-        return sorted(
-            os.path.join(abr_extract_dir, f)
-            for f in os.listdir(abr_extract_dir)
-            if f.lower().endswith(".abr")
+        raise ValueError(
+            "ZIP archives are not supported. Please use a direct .abr file."
         )
     else:
         # Treat as a direct .abr file
