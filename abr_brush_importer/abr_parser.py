@@ -831,6 +831,11 @@ class ABRParser:
 
             idx += 1
             self._seek(brush_end)
+            # Align to 4-byte boundary between brush entries
+            pos = self._tell()
+            pad = (4 - (pos % 4)) % 4
+            if pad and pos + pad < block_end:
+                self._seek(pos + pad)
 
         return brushes
 
@@ -841,6 +846,11 @@ class ABRParser:
 
         if len(brush_data) < 15:
             return None
+
+        # Strategy 0: VMA layout with null-terminated ASCII ID
+        tip = self._try_parse_v6_vma(brush_data, index)
+        if tip:
+            return tip
 
         # Strategy 1: Named layout (most common in v6+)
         tip = self._try_parse_v6_named(brush_data, index)
@@ -860,6 +870,120 @@ class ABRParser:
         return None
 
     # ---------- v6 layout strategies ----------
+
+    def _try_parse_v6_vma(self, data: bytes, index: int) -> Optional[BrushTip]:
+        """Strategy for VMA-format brushes with null-terminated ASCII IDs."""
+        if len(data) < 80:
+            return None
+
+        # Find null-terminated ASCII ID at start of brush data
+        null_pos = -1
+        for i in range(min(256, len(data))):
+            if data[i] == 0:
+                null_pos = i
+                break
+        if null_pos < 4:
+            return None
+
+        # Verify the ID is printable ASCII
+        id_bytes = data[:null_pos]
+        if not all(0x20 <= b < 0x7f for b in id_bytes):
+            return None
+        brush_name = id_bytes.decode('ascii', errors='replace')
+
+        # After null: type(1) + uint32(4) + uint16(2) + data_len(4) = 11 bytes
+        pos = null_pos + 1
+        if pos + 11 > len(data):
+            return None
+        pos += 1   # type byte
+        pos += 4   # misc uint32
+        pos += 2   # unknown uint16
+        vma_data_len = struct.unpack_from('>I', data, pos)[0]
+        pos += 4
+
+        if vma_data_len <= 20:
+            return None
+        vma_end = pos + vma_data_len
+        if vma_end > len(data):
+            vma_end = len(data)
+
+        # VMA bounds: top, left, bottom, right, max_channels (each uint32)
+        if pos + 20 > len(data):
+            return None
+        top = struct.unpack_from('>I', data, pos)[0]; pos += 4
+        left = struct.unpack_from('>I', data, pos)[0]; pos += 4
+        bottom = struct.unpack_from('>I', data, pos)[0]; pos += 4
+        right = struct.unpack_from('>I', data, pos)[0]; pos += 4
+        max_channels = struct.unpack_from('>I', data, pos)[0]; pos += 4
+
+        canvas_w = right - left
+        canvas_h = bottom - top
+        if not (0 < canvas_w <= 16384 and 0 < canvas_h <= 16384):
+            return None
+        if max_channels > 200:
+            return None
+
+        # Iterate channel entries to find the first written channel
+        best_data = None
+        best_dims = None
+        for ch_idx in range(max_channels + 2):
+            if pos + 4 > vma_end:
+                break
+            is_written = struct.unpack_from('>I', data, pos)[0]
+            pos += 4
+
+            if is_written == 0:
+                continue
+
+            if pos + 4 > vma_end:
+                break
+            ch_length = struct.unpack_from('>I', data, pos)[0]
+            pos += 4
+            ch_end = pos + ch_length
+
+            if ch_length <= 23 or ch_end > vma_end:
+                pos = min(ch_end, vma_end)
+                continue
+
+            # Channel header: depth(4) + TLBR(4*4) + pixel_depth(2) + compression(1)
+            ch_depth = struct.unpack_from('>I', data, pos)[0]
+            ch_top = struct.unpack_from('>I', data, pos + 4)[0]
+            ch_left = struct.unpack_from('>I', data, pos + 8)[0]
+            ch_bottom = struct.unpack_from('>I', data, pos + 12)[0]
+            ch_right = struct.unpack_from('>I', data, pos + 16)[0]
+            _ch_pixel_depth = struct.unpack_from('>H', data, pos + 20)[0]
+            ch_compression = data[pos + 22]
+
+            ch_w = ch_right - ch_left
+            ch_h = ch_bottom - ch_top
+            img_start = pos + 23
+
+            if (0 < ch_w <= 16384 and 0 < ch_h <= 16384 and
+                    ch_depth in (8, 16) and ch_compression in (0, 1)):
+                bpp = max(1, ch_depth // 8)
+                ch_img_data = data[img_start:ch_end]
+                extracted = self._extract_single_channel(
+                    ch_img_data, ch_w, ch_h, bpp, ch_compression
+                )
+                if extracted is not None and best_data is None:
+                    best_data = extracted
+                    best_dims = (ch_w, ch_h, ch_depth)
+
+            pos = min(ch_end, vma_end)
+
+        if best_data is None or best_dims is None:
+            return None
+
+        ch_w, ch_h, ch_depth = best_dims
+        tip = BrushTip(
+            name=brush_name if brush_name else f"Brush {index + 1}",
+            width=ch_w, height=ch_h, depth=ch_depth,
+            channels=1,
+            diameter=max(ch_w, ch_h), brush_type=2,
+            image_data=best_data,
+        )
+        self._finalize_tip(tip)
+        return tip
 
     def _try_parse_v6_simple(self, data: bytes, index: int) -> Optional[BrushTip]:
         if len(data) < 15:
