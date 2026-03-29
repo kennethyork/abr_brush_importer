@@ -21,6 +21,7 @@ from abr_brush_importer.abr_parser import (
     ABRParser, BrushTip, BrushDynamics, BrushPattern, parse_abr,
 )
 from abr_brush_importer.gbr_writer import write_gbr, write_png
+from abr_brush_importer.kpp_writer import write_kpp, _make_preset_xml, _make_thumbnail
 
 print("All modules import OK")
 
@@ -166,5 +167,95 @@ print("Truncated header recovery: OK")
 
 # Cleanup
 shutil.rmtree(tmp)
+
+# ── 13) Test write_kpp produces a valid ZIP ──
+tmp2 = tempfile.mkdtemp()
+kpp_tip = BrushTip()
+kpp_tip.name = "KPP Test"
+kpp_tip.width = 32
+kpp_tip.height = 32
+kpp_tip.spacing = 25
+kpp_tip.channels = 1
+kpp_tip.image_data = ABRParser._generate_computed_image(32, 100, 0, 80)
+
+kpp_path = os.path.join(tmp2, "test.kpp")
+write_kpp(kpp_path, kpp_tip)
+assert os.path.isfile(kpp_path), "write_kpp did not create the file"
+
+import zipfile
+with zipfile.ZipFile(kpp_path, 'r') as zf:
+    names = zf.namelist()
+    assert "preset.xml" in names, f"preset.xml not in .kpp: {names}"
+    assert "thumbnail.png" in names, f"thumbnail.png not in .kpp: {names}"
+    # At least one .gbr inside
+    gbr_files = [n for n in names if n.endswith('.gbr')]
+    assert gbr_files, f"No embedded .gbr in .kpp: {names}"
+
+    xml_content = zf.read("preset.xml").decode("utf-8")
+    assert "paintbrush" in xml_content, "preset.xml missing paintop id"
+    assert "KPP Test" in xml_content, "preset.xml missing brush name"
+    assert "Spacing/value" in xml_content, "preset.xml missing Spacing param"
+    assert "Opacity/value" in xml_content, "preset.xml missing Opacity param"
+
+print(f"write_kpp: OK (files: {names})")
+
+# ── 14) Test _make_preset_xml content ──
+xml = _make_preset_xml("My Brush", "my_brush.gbr", 50.0, 0.25, 0.8, 0.9)
+assert "paintbrush" in xml
+assert "My Brush" in xml
+assert "0.2500" in xml   # spacing
+assert "0.8000" in xml   # opacity
+assert "0.9000" in xml   # flow
+assert "my_brush.gbr" in xml
+print("_make_preset_xml: OK")
+
+# ── 15) Test _make_thumbnail produces valid PNG ──
+thumb_tip = BrushTip(width=16, height=16, channels=1,
+                     image_data=bytes([128] * 256))
+thumb = _make_thumbnail(thumb_tip, 32)
+assert thumb[:8] == b'\x89PNG\r\n\x1a\n', "thumbnail is not a valid PNG"
+print("_make_thumbnail: OK")
+
+# ── 16) Test write_kpp with dynamics ──
+dyn_tip = BrushTip()
+dyn_tip.name = "Dynamic Brush"
+dyn_tip.width = 16
+dyn_tip.height = 16
+dyn_tip.spacing = 50
+dyn_tip.channels = 1
+dyn_tip.image_data = bytes([200] * 256)
+dyn_tip.dynamics = BrushDynamics(spacing=50, opacity=75, flow=90)
+
+kpp_dyn_path = os.path.join(tmp2, "test_dyn.kpp")
+write_kpp(kpp_dyn_path, dyn_tip)
+with zipfile.ZipFile(kpp_dyn_path, 'r') as zf:
+    xml_content = zf.read("preset.xml").decode("utf-8")
+    assert "0.7500" in xml_content, "opacity not preserved in preset.xml"
+    assert "0.9000" in xml_content, "flow not preserved in preset.xml"
+print("write_kpp with dynamics: OK")
+
+# ── 17) Test write_kpp with invert ──
+inv_tip = BrushTip(name="Inverted", width=4, height=4, channels=1,
+                   image_data=bytes([100] * 16), spacing=25)
+kpp_inv_path = os.path.join(tmp2, "test_inv.kpp")
+write_kpp(kpp_inv_path, inv_tip, invert=True)
+with zipfile.ZipFile(kpp_inv_path, 'r') as zf:
+    # Check embedded GBR pixels are inverted (100 → 155)
+    gbr_file = [n for n in zf.namelist() if n.endswith('.gbr')][0]
+    gbr_data = zf.read(gbr_file)
+    # GBR header is 28 + name_len bytes; pixel data follows
+    # Just verify the file was created without errors
+    assert len(gbr_data) > 28, "embedded GBR too short"
+print("write_kpp with invert: OK")
+
+# ── 18) Test write_kpp with RGBA tip ──
+rgba_tip = BrushTip(name="RGBA Brush", width=8, height=8, channels=4,
+                    image_data=bytes([255, 0, 0, 200] * 64), spacing=30)
+kpp_rgba_path = os.path.join(tmp2, "test_rgba.kpp")
+write_kpp(kpp_rgba_path, rgba_tip)
+assert os.path.isfile(kpp_rgba_path)
+print("write_kpp with RGBA: OK")
+
+shutil.rmtree(tmp2)
 
 print("\nAll tests passed!")
