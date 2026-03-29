@@ -213,6 +213,12 @@ class ABRImporterDialog(QDialog):
             "Invert brush images (use if brushes appear inverted)"
         )
         opts_lay.addWidget(self.invert_check)
+
+        self.pressure_check = QCheckBox(
+            "Enable pressure sensitivity for size (recommended for tablet use)"
+        )
+        self.pressure_check.setChecked(True)
+        opts_lay.addWidget(self.pressure_check)
         root.addWidget(opts_box)
 
         # ── Progress ──
@@ -331,6 +337,8 @@ class ABRImporterDialog(QDialog):
                 dyn_parts.append(f"Size Jitter {d.size_jitter}%")
             if d.angle_jitter:
                 dyn_parts.append(f"Angle Jitter {d.angle_jitter}°")
+            if d.roundness_jitter:
+                dyn_parts.append(f"Roundness Jitter {d.roundness_jitter}%")
             if d.scatter:
                 dyn_parts.append(f"Scatter {d.scatter}%")
             if d.wet_edges:
@@ -341,6 +349,18 @@ class ABRImporterDialog(QDialog):
                 dyn_parts.append("Smoothing")
             if dyn_parts:
                 lines.append(f"<b>Dynamics:</b> {', '.join(dyn_parts)}")
+            # Pressure curves extracted from the ABR
+            pressure_parts = []
+            if d.size_pressure_curve:
+                pressure_parts.append("Size")
+            if d.opacity_pressure_curve:
+                pressure_parts.append("Opacity")
+            if d.flow_pressure_curve:
+                pressure_parts.append("Flow")
+            if pressure_parts:
+                lines.append(
+                    f"<b>ABR Pressure Curves:</b> {', '.join(pressure_parts)}"
+                )
         self.info_label.setText("<br>".join(lines))
 
     # ---------- Import logic ----------
@@ -368,6 +388,7 @@ class ABRImporterDialog(QDialog):
         os.makedirs(brushes_dir, exist_ok=True)
 
         invert = self.invert_check.isChecked()
+        use_pressure = self.pressure_check.isChecked()
 
         self.progress.setVisible(True)
         self.progress.setRange(0, len(selected))
@@ -403,7 +424,7 @@ class ABRImporterDialog(QDialog):
                               channels=ch)
                 if save_kpp:
                     path = _unique(os.path.join(brushes_dir, f"{safe_name}.kpp"))
-                    write_kpp(path, tip, invert=invert)
+                    write_kpp(path, tip, invert=invert, use_pressure=use_pressure)
                 imported += 1
             except Exception as exc:
                 errors.append(f"{tip.name}: {exc}")

@@ -18,7 +18,7 @@ import struct
 import zipfile
 import zlib
 from html import escape as _xml_escape
-from typing import Optional
+from typing import List, Optional, Tuple
 
 from .abr_parser import ABRParser, BrushTip, BrushDynamics
 
@@ -27,7 +27,8 @@ from .abr_parser import ABRParser, BrushTip, BrushDynamics
 #  Public entry point                                                  #
 # ------------------------------------------------------------------ #
 
-def write_kpp(filepath: str, tip: BrushTip, invert: bool = False) -> None:
+def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
+              use_pressure: bool = True) -> None:
     """Write a Krita Preset (.kpp) file from a *BrushTip*.
 
     The preset embeds the brush tip as a GBR file inside the ZIP so the
@@ -41,6 +42,10 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False) -> None:
         The parsed ABR brush tip.
     invert : bool
         When True, invert the grayscale brush tip before embedding.
+    use_pressure : bool
+        When True (default), enable pressure sensitivity for brush size.
+        If the ABR contained explicit pressure curves for opacity or flow
+        those are always applied regardless of this flag.
     """
     name = tip.name or "Imported Brush"
     safe = _sanitize_filename(name)
@@ -70,8 +75,29 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False) -> None:
     # Size and angle jitter for randomised stroke variation.
     size_jitter = (dyn.size_jitter / 100.0) if dyn else 0.0
     angle_jitter = (dyn.angle_jitter / 360.0) if dyn else 0.0
+    # Roundness jitter for random squish variation.
+    roundness_jitter = (dyn.roundness_jitter / 100.0) if dyn else 0.0
     # Stroke stabiliser.
     smoothing = dyn.smoothing if dyn else False
+
+    # --- Pressure curves ---
+    # Use curves extracted from the ABR descriptor when available.
+    # For size, fall back to a default linear curve when use_pressure is True
+    # so that the brush responds to stylus pressure even without an explicit curve.
+    if dyn and dyn.size_pressure_curve:
+        size_pressure_curve: Optional[List[Tuple[float, float]]] = dyn.size_pressure_curve
+    elif use_pressure:
+        size_pressure_curve = []  # triggers a default linear pressure curve
+    else:
+        size_pressure_curve = None
+
+    # Only pass opacity/flow pressure curves when the ABR actually contained data.
+    opacity_pressure_curve: Optional[List[Tuple[float, float]]] = (
+        dyn.opacity_pressure_curve if (dyn and dyn.opacity_pressure_curve) else None
+    )
+    flow_pressure_curve: Optional[List[Tuple[float, float]]] = (
+        dyn.flow_pressure_curve if (dyn and dyn.flow_pressure_curve) else None
+    )
 
     # --- Build components ---
     gbr_bytes = _make_gbr_bytes(name, tip.width, tip.height, gray, tip.spacing)
@@ -90,7 +116,11 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False) -> None:
         scatter_count=scatter_count,
         size_jitter=size_jitter,
         angle_jitter=angle_jitter,
+        roundness_jitter=roundness_jitter,
         smoothing=smoothing,
+        size_pressure_curve=size_pressure_curve,
+        opacity_pressure_curve=opacity_pressure_curve,
+        flow_pressure_curve=flow_pressure_curve,
     )
 
     # --- Pack into ZIP ---
@@ -114,8 +144,12 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
                      angle: int = 0, hardness: float = 1.0,
                      ratio: float = 1.0, scatter: float = 0.0,
                      scatter_count: int = 1, size_jitter: float = 0.0,
-                     angle_jitter: float = 0.0,
-                     smoothing: bool = False) -> str:
+                     angle_jitter: float = 0.0, roundness_jitter: float = 0.0,
+                     smoothing: bool = False,
+                     size_pressure_curve: Optional[List[Tuple[float, float]]] = None,
+                     opacity_pressure_curve: Optional[List[Tuple[float, float]]] = None,
+                     flow_pressure_curve: Optional[List[Tuple[float, float]]] = None,
+                     ) -> str:
     """Return the preset.xml string for a Krita pixel brush preset.
 
     All parameters beyond *angle* correspond to Photoshop brush dynamics that
@@ -136,8 +170,17 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
         Random size variation per dab (0–1).
     angle_jitter : float
         Random angle variation per dab (0–1, where 1 = full 360°).
+    roundness_jitter : float
+        Random roundness/ratio variation per dab (0–1).
     smoothing : bool
         Enable Krita's stroke stabiliser (AutoSmoothing).
+    size_pressure_curve : list of (x, y) or empty list or None
+        Pressure→size mapping.  An empty list uses a linear 0→1 curve.
+        None disables the pressure sensor for size entirely.
+    opacity_pressure_curve : list of (x, y) or empty list or None
+        Pressure→opacity mapping.  Same semantics as *size_pressure_curve*.
+    flow_pressure_curve : list of (x, y) or empty list or None
+        Pressure→flow mapping.  Same semantics as *size_pressure_curve*.
     """
 
     # The brush_definition is an XML snippet embedded (escaped) inside the
@@ -175,6 +218,23 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
         f'    <param name="Scatter/count" type="int">{scatter_count}</param>\n'
         f'    <param name="SizeJitter/value" type="float">{size_jitter:.4f}</param>\n'
         f'    <param name="AngleJitter/value" type="float">{angle_jitter:.4f}</param>\n'
+        f'    <param name="RoundnessJitter/value" type="float">{roundness_jitter:.4f}</param>\n'
+    )
+
+    # Pressure sensors — each curve gets a useCurve flag and a sensor XML block.
+    for param_prefix, curve in (
+        ('size', size_pressure_curve),
+        ('Opacity', opacity_pressure_curve),
+        ('flow', flow_pressure_curve),
+    ):
+        if curve is not None:
+            sensor_xml = _format_sensor_xml(curve)
+            xml += (
+                f'    <param name="{param_prefix}/useCurve" type="bool">true</param>\n'
+                f'    <param name="{param_prefix}/sensor" type="string">{sensor_xml}</param>\n'
+            )
+
+    xml += (
         '  </param>\n'
         '</params>\n'
     )
@@ -264,6 +324,31 @@ def _sanitize_filename(name: str) -> str:
     safe = "".join(c if c.isalnum() or c in " -_." else "_" for c in name)
     safe = safe.strip().strip(".")
     return safe[:80] if safe else "brush"
+
+
+def _format_sensor_xml(curve: List[Tuple[float, float]]) -> str:
+    """Return Krita sensor XML (XML-escaped) for a pressure curve.
+
+    The inner ``<sensors>`` element is XML-escaped so it can be embedded
+    directly as the text content of a ``<param>`` element.
+
+    Parameters
+    ----------
+    curve : list of (x, y) tuples
+        Normalised pressure→value curve points in the 0–1 range.
+        If empty, a linear curve from (0,0) to (1,1) is used so that the
+        brush fully responds to stylus pressure.
+    """
+    if not curve:
+        curve = [(0.0, 0.0), (1.0, 1.0)]
+    curve_str = ";".join(f"{x:.4f},{y:.4f}" for x, y in curve) + ";"
+    inner = (
+        '<sensors>'
+        f'<sensor active="1" curve="{curve_str}" id="pressure" '
+        'length="-1" name="pressure"/>'
+        '</sensors>'
+    )
+    return _xml_escape(inner)
 
 
 def _ensure_dir(filepath: str) -> None:
