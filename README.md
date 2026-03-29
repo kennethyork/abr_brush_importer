@@ -28,19 +28,27 @@ curves, spacing, scatter, jitter, and more.
 ## Features
 
 - Parses ABR versions 1, 2, 6, 7, 9, and 10
-- Exports brushes in three formats:
-  - **`.gbr`** — GIMP Brush v2 (recognized by Krita as a brush tip)
-  - **`.png`** — plain image of the brush tip
-  - **`.kpp`** — Krita Preset (preserves dynamics: spacing, opacity, flow,
-    scatter, jitter, pressure curves, smoothing, wet edges, …)
-- **Best-match import** — automatically writes `.kpp` for brushes with
-  dynamics and `.gbr` for simpler brushes
+- **Every imported brush produces both a full preset and a brush tip:**
+  - **`.kpp`** → `paintoppresets/` — Krita Preset (preserves dynamics: spacing,
+    opacity, flow, scatter, jitter, pressure curves, smoothing, wet edges, …).
+    Appears in the **Brush Presets** docker.
+  - **`.gbr`** → `brushes/` — GIMP Brush v2 (recognized by Krita as a brush tip).
+    Appears in the **Predefined Brush Tips** tab.
+  - **`.png`** — optional plain image of the brush tip
+- **Auto-generated `.bundle`** — a Krita resource bundle containing all
+  presets, brush tips, and patterns is created automatically on every import
+  for easy backup and sharing
+- **Best-match import** — always writes `.kpp` + `.gbr`; the preset
+  automatically maps ABR dynamics to Krita equivalents
 - **Automatic drop-folder** — place `.abr` files in a watched folder and
   they are imported on every Krita startup, or continuously in the background
 - **Online ABR** — paste a URL pointing to a `.abr` file or a `.zip`
   archive; the plugin downloads, caches, and loads the brushes automatically
 - **Import tracking** — an on-disk database skips files that have not
   changed since the last import
+- **Multi-directory replication** — brush files, presets, and bundles are
+  automatically copied to all detected Krita resource directories (Flatpak,
+  Snap, native)
 - All background work runs on a dedicated thread — Krita's UI is never blocked
 - Live preview with per-brush metadata
 - Batch import of all or selected brushes
@@ -201,8 +209,10 @@ new or changed brushes — no dialog required.
 | macOS            | `~/Library/Application Support/Krita/abr_brushes/` |
 | Windows          | `%APPDATA%\krita\abr_brushes\`                     |
 
-Imported brushes appear in the **Predefined Brush Tips** panel. Files that have
-not changed since the last import are skipped automatically.
+Imported brushes appear as **full presets** in the **Brush Presets** docker
+and as brush tips in the **Predefined Brush Tips** panel. A `.bundle` file is
+also created automatically. Files that have not changed since the last import
+are skipped automatically.
 
 ### Interactive dialog
 
@@ -246,7 +256,7 @@ Settings are saved automatically and restored on the next launch.
 
 | Option | Description |
 | ------ | ----------- |
-| Best match (recommended) | `.kpp` for brushes with dynamics, `.gbr` otherwise |
+| Best match (recommended) | Always writes `.kpp` preset + `.gbr` tip for every brush |
 | Save as `.gbr` | Writes GIMP Brush v2 files (brush tip only) |
 | Also save as `.png` | Writes a plain PNG image of the brush tip |
 | Also save as `.kpp` | Writes a full Krita Preset preserving all dynamics |
@@ -254,8 +264,10 @@ Settings are saved automatically and restored on the next launch.
 | Invert brush images | Inverts pixel values (useful if brushes appear inverted) |
 | Enable pressure sensitivity | Adds a pressure→size curve to `.kpp` presets |
 
-Imported brushes are written to `<krita-resources>/brushes/`. If they are not
-visible immediately, go to **Settings → Manage Resources** or restart Krita.
+Imported presets are written to `<krita-resources>/paintoppresets/` and brush
+tips to `<krita-resources>/brushes/`. A `.bundle` containing everything is
+placed in the resource root. If brushes are not visible immediately, go to
+**Settings → Manage Resources** or restart Krita.
 
 ---
 
