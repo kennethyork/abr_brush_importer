@@ -36,6 +36,13 @@ class ABRBrushImporter(Extension):
         dialog = ABRImporterDialog(resource_dir, parent_window)
         dialog.exec_()
 
+        # Ask Krita to reload resources so newly imported brushes/presets
+        # appear without requiring a full restart.
+        try:
+            Krita.instance().notifySettingsUpdated()
+        except Exception:
+            pass
+
     @staticmethod
     def _get_resource_dir() -> str:
         """Return Krita's writable resource directory."""
