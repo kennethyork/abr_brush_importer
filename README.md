@@ -9,6 +9,7 @@ curves, spacing, scatter, jitter, and more.
 ## Table of Contents
 
 - [Features](#features)
+- [Comparison with GIMP's built-in ABR importer](#comparison-with-gimps-built-in-abr-importer)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Usage](#usage)
@@ -44,6 +45,70 @@ curves, spacing, scatter, jitter, and more.
 - Live preview with per-brush metadata
 - Batch import of all or selected brushes
 - Exports embedded Photoshop patterns as PNG files
+
+---
+
+## Comparison with GIMP's built-in ABR importer
+
+GIMP ships a built-in ABR importer (`file-abr`) that turns ABR brush shapes
+into GIMP Brush (`.gbr`) files.  It handles the most common ABR versions and
+extracts the raw brush bitmap — but it stops there.  Every piece of
+*dynamic* information stored in the ABR file is silently thrown away.
+
+The table below shows the full feature gap.
+
+| Feature | GIMP `file-abr` | This Krita plugin |
+|---------|:-:|:-:|
+| **ABR version support** | | |
+| ABR v1 / v2 (legacy Photoshop) | ✅ | ✅ |
+| ABR v6 (CS, CS2) | ✅ | ✅ |
+| ABR v7 / v9 / v10 (CS3–CC) | ⚠️ partial | ✅ |
+| **Output formats** | | |
+| GIMP Brush (`.gbr`) | ✅ | ✅ |
+| Plain PNG image | ❌ | ✅ |
+| Krita Preset (`.kpp`) with full dynamics | ❌ | ✅ |
+| **Brush shape properties** | | |
+| Brush bitmap / grayscale tip | ✅ | ✅ |
+| RGB / RGBA colour brush tips | ❌ | ✅ |
+| Computed (procedural) brush tips | ✅ | ✅ |
+| Spacing | ✅ | ✅ |
+| Diameter / angle / hardness | ✅ | ✅ |
+| Roundness (aspect ratio) | ❌ | ✅ |
+| **Brush dynamics (ABR v6+)** | | |
+| Opacity | ❌ discarded | ✅ preserved in `.kpp` |
+| Flow | ❌ discarded | ✅ preserved in `.kpp` |
+| Scatter amount & dab count | ❌ discarded | ✅ preserved in `.kpp` |
+| Size jitter | ❌ discarded | ✅ preserved in `.kpp` |
+| Angle jitter | ❌ discarded | ✅ preserved in `.kpp` |
+| Roundness jitter | ❌ discarded | ✅ preserved in `.kpp` |
+| Pressure→size curve | ❌ discarded | ✅ preserved in `.kpp` |
+| Pressure→opacity curve | ❌ discarded | ✅ preserved in `.kpp` |
+| Pressure→flow curve | ❌ discarded | ✅ preserved in `.kpp` |
+| Wet edges | ❌ discarded | ✅ preserved in `.kpp` |
+| Smoothing / stroke stabiliser | ❌ discarded | ✅ preserved in `.kpp` |
+| Dual brush | ❌ discarded | ✅ tip index preserved |
+| **Embedded content** | | |
+| Embedded Photoshop patterns (`patt` blocks) | ❌ | ✅ exported as PNG |
+| **Workflow & automation** | | |
+| Batch import of entire ABR file | ✅ | ✅ |
+| Live preview & per-brush metadata | ❌ | ✅ |
+| Drop-folder / zero-config auto-import | ❌ | ✅ |
+| Background file watcher (no restart needed) | ❌ | ✅ |
+| Import from URL (`.abr` or `.zip`) | ❌ | ✅ |
+| Import-tracking database (skip unchanged files) | ❌ | ✅ |
+
+> **Legend** — ✅ supported  ⚠️ limited / partial  ❌ not supported
+
+### Why does this matter?
+
+When you open an ABR file in GIMP you lose almost all of the brushwork the
+original artist configured: the scatter that gives a grass brush its randomness,
+the pressure curve that makes an ink brush taper naturally, the flow that
+controls ink build-up.  The resulting `.gbr` is just the raw stamp shape.
+
+This plugin reads the same ABR data but writes it into Krita's `.kpp` preset
+format, which *has* native equivalents for every one of those dynamics.  The
+brush you import into Krita behaves the way it was designed to behave.
 
 ---
 
