@@ -416,4 +416,58 @@ print("write_kpp RoundnessJitter: OK")
 
 shutil.rmtree(tmp3)
 
+# ── Utils: _sanitize ──
+from abr_brush_importer.utils import _sanitize, _unique, _choose_format, brushes_dest, patterns_dest
+
+assert _sanitize("Test Brush 1") == "Test Brush 1", "_sanitize: plain name"
+assert _sanitize("My/Brush!@#$") == "My_Brush____", "_sanitize: special chars"
+assert _sanitize("") == "brush", "_sanitize: empty string"
+assert _sanitize("...") == "brush", "_sanitize: only dots"
+assert _sanitize("A" * 200) == "A" * 100, "_sanitize: length cap"
+assert _sanitize("  leading-trailing  ") == "leading-trailing", "_sanitize: strip spaces"
+print("_sanitize: OK")
+
+# ── Utils: _unique ──
+tmp_u = tempfile.mkdtemp()
+p = os.path.join(tmp_u, "brush.gbr")
+assert _unique(p) == p, "_unique: non-existing path unchanged"
+open(p, "w").close()
+p1 = _unique(p)
+assert p1 == os.path.join(tmp_u, "brush_1.gbr"), f"_unique: first collision → _1, got {p1}"
+open(p1, "w").close()
+p2 = _unique(p)
+assert p2 == os.path.join(tmp_u, "brush_2.gbr"), f"_unique: second collision → _2, got {p2}"
+shutil.rmtree(tmp_u)
+print("_unique: OK")
+
+# ── Utils: _choose_format ──
+plain_tip = BrushTip()
+plain_tip.name = "Plain"
+plain_tip.width = 16
+plain_tip.height = 16
+plain_tip.channels = 1
+plain_tip.image_data = bytes([128] * (plain_tip.width * plain_tip.height * plain_tip.channels))
+assert _choose_format(plain_tip) == "gbr", "_choose_format: no dynamics → gbr"
+
+dyn_tip = BrushTip()
+dyn_tip.name = "Dynamic"
+dyn_tip.width = 16
+dyn_tip.height = 16
+dyn_tip.channels = 1
+dyn_tip.image_data = bytes([128] * (dyn_tip.width * dyn_tip.height * dyn_tip.channels))
+dyn_tip.dynamics = BrushDynamics(spacing=25, scatter=50)
+assert _choose_format(dyn_tip) == "kpp", "_choose_format: dynamics → kpp"
+print("_choose_format: OK")
+
+# ── Utils: destination path helpers ──
+tmp_res = tempfile.mkdtemp()
+b_dir = brushes_dest(tmp_res)
+assert b_dir == os.path.join(tmp_res, "brushes"), "brushes_dest path"
+assert os.path.isdir(b_dir), "brushes_dest creates directory"
+p_dir = patterns_dest(tmp_res)
+assert p_dir == os.path.join(tmp_res, "patterns"), "patterns_dest path"
+assert os.path.isdir(p_dir), "patterns_dest creates directory"
+shutil.rmtree(tmp_res)
+print("brushes_dest / patterns_dest: OK")
+
 print("\nAll tests passed!")
