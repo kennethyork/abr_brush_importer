@@ -18,6 +18,9 @@ echo ""
 # Create target directories
 mkdir -p "$KRITA_PYKRITA/abr_brush_importer"
 
+# Create the abr_brushes drop folder for automatic import
+mkdir -p "$HOME/.var/app/org.kde.krita/data/krita/abr_brushes"
+
 # Copy the .desktop manifest (sits alongside the package)
 cp abr_brush_importer.desktop "$KRITA_PYKRITA/"
 

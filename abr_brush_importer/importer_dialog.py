@@ -290,9 +290,9 @@ class ABRImporterDialog(QDialog):
 
     def _build_auto_import_ui(self, root: QVBoxLayout) -> None:
         """Add the Automatic Import settings group to *root*."""
-        from . import __init__ as _init_mod
+        from . import ABR_BRUSHES_FOLDER
         magic_folder = os.path.join(
-            self.resource_dir, _init_mod.ABR_BRUSHES_FOLDER
+            self.resource_dir, ABR_BRUSHES_FOLDER
         )
 
         auto_box = QGroupBox("Automatic Import")
@@ -422,10 +422,10 @@ class ABRImporterDialog(QDialog):
 
     def _scan_now(self) -> None:
         """Run a one-shot scan of the watch folder immediately."""
-        from . import __init__ as _init_mod
+        from . import ABR_BRUSHES_FOLDER
         folder = self.watch_folder_edit.text().strip()
         if not folder:
-            folder = os.path.join(self.resource_dir, _init_mod.ABR_BRUSHES_FOLDER)
+            folder = os.path.join(self.resource_dir, ABR_BRUSHES_FOLDER)
 
         if not os.path.isdir(folder):
             QMessageBox.warning(

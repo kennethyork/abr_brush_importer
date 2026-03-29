@@ -16,6 +16,9 @@ echo.
 REM Create target directories
 if not exist "%KRITA_PYKRITA%\abr_brush_importer" mkdir "%KRITA_PYKRITA%\abr_brush_importer"
 
+REM Create the abr_brushes drop folder for automatic import
+if not exist "%APPDATA%\krita\abr_brushes" mkdir "%APPDATA%\krita\abr_brushes"
+
 REM Copy the .desktop manifest (sits alongside the package)
 copy /Y "abr_brush_importer.desktop" "%KRITA_PYKRITA%\" >nul
 
