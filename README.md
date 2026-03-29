@@ -145,6 +145,26 @@ Installs to `~/.var/app/org.kde.krita/data/krita/pykrita/abr_brush_importer/`.
 > **Tip:** If you're not sure which you have, run `flatpak list | grep krita`.
 > If it prints a result, use `install_flatpak.sh`.
 
+### macOS
+
+```bash
+git clone https://github.com/kennethyork/abr_brush_importer.git
+cd abr_brush_importer
+bash install_macos.sh
+```
+
+Installs to `~/Library/Application Support/Krita/pykrita/abr_brush_importer/`.
+
+### Windows
+
+```bat
+git clone https://github.com/kennethyork/abr_brush_importer.git
+cd abr_brush_importer
+install_windows.bat
+```
+
+Installs to `%APPDATA%\krita\pykrita\abr_brush_importer\`.
+
 ### Manual (any platform)
 
 1. Locate your Krita *pykrita* folder:
