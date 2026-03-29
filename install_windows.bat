@@ -26,6 +26,7 @@ REM Copy the Python package
 copy /Y "abr_brush_importer\__init__.py"        "%KRITA_PYKRITA%\abr_brush_importer\" >nul
 copy /Y "abr_brush_importer\abr_parser.py"      "%KRITA_PYKRITA%\abr_brush_importer\" >nul
 copy /Y "abr_brush_importer\auto_import.py"     "%KRITA_PYKRITA%\abr_brush_importer\" >nul
+copy /Y "abr_brush_importer\bundle_writer.py"   "%KRITA_PYKRITA%\abr_brush_importer\" >nul
 copy /Y "abr_brush_importer\gbr_writer.py"      "%KRITA_PYKRITA%\abr_brush_importer\" >nul
 copy /Y "abr_brush_importer\import_db.py"       "%KRITA_PYKRITA%\abr_brush_importer\" >nul
 copy /Y "abr_brush_importer\import_pipeline.py" "%KRITA_PYKRITA%\abr_brush_importer\" >nul

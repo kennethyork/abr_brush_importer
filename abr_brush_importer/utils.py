@@ -60,3 +60,10 @@ def patterns_dest(resource_dir: str) -> str:
     path = os.path.join(resource_dir, "patterns")
     os.makedirs(path, exist_ok=True)
     return path
+
+
+def paintoppresets_dest(resource_dir: str) -> str:
+    """Return (and create) the paintoppresets sub-directory under *resource_dir*."""
+    path = os.path.join(resource_dir, "paintoppresets")
+    os.makedirs(path, exist_ok=True)
+    return path

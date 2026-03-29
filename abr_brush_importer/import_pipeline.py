@@ -17,9 +17,11 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from .abr_parser import ABRParser
+from .bundle_writer import write_bundle
 from .gbr_writer import write_gbr, write_png
 from .kpp_writer import write_kpp
-from .utils import _sanitize, _unique, _choose_format, brushes_dest, patterns_dest
+from .utils import (_sanitize, _unique, _choose_format,
+                   brushes_dest, patterns_dest, paintoppresets_dest)
 
 
 # ------------------------------------------------------------------ #
@@ -118,6 +120,10 @@ def import_abr_files(
 
     result = ImportResult()
     brushes_dir = brushes_dest(resource_dir)
+    presets_dir = paintoppresets_dest(resource_dir)
+    written_brush_files: List[str] = []
+    written_preset_files: List[str] = []
+    written_pattern_files: List[str] = []
 
     for abr_path in paths:
         # ── Skip unchanged files when a DB is available ─────────────
@@ -150,25 +156,27 @@ def import_abr_files(
                 pixels = bytes(255 - b for b in pixels)
 
             try:
+                # Always write a .kpp preset to paintoppresets/
+                kpp_path = _unique(os.path.join(presets_dir, f"{safe_name}.kpp"))
+                write_kpp(
+                    kpp_path, tip,
+                    invert=options.invert,
+                    use_pressure=options.use_pressure,
+                )
+                written_preset_files.append(kpp_path)
+
+                # Also write brush tip files as requested
                 if options.use_best_match:
-                    fmt = _choose_format(tip)
-                    if fmt == "kpp":
-                        path = _unique(os.path.join(brushes_dir, f"{safe_name}.kpp"))
-                        write_kpp(
-                            path, tip,
-                            invert=options.invert,
-                            use_pressure=options.use_pressure,
-                        )
-                    else:
-                        gbr_pixels = ABRParser.get_grayscale(tip) if ch > 1 else pixels
-                        if options.invert and ch > 1:
-                            gbr_pixels = bytes(255 - b for b in gbr_pixels)
-                        path = _unique(os.path.join(brushes_dir, f"{safe_name}.gbr"))
-                        write_gbr(
-                            path, tip.name or safe_name,
-                            tip.width, tip.height, gbr_pixels, tip.spacing,
-                            channels=1,
-                        )
+                    gbr_pixels = ABRParser.get_grayscale(tip) if ch > 1 else pixels
+                    if options.invert and ch > 1:
+                        gbr_pixels = bytes(255 - b for b in gbr_pixels)
+                    path = _unique(os.path.join(brushes_dir, f"{safe_name}.gbr"))
+                    write_gbr(
+                        path, tip.name or safe_name,
+                        tip.width, tip.height, gbr_pixels, tip.spacing,
+                        channels=1,
+                    )
+                    written_brush_files.append(path)
                 else:
                     if options.save_gbr:
                         gbr_pixels = ABRParser.get_grayscale(tip) if ch > 1 else pixels
@@ -180,16 +188,11 @@ def import_abr_files(
                             tip.width, tip.height, gbr_pixels, tip.spacing,
                             channels=1,
                         )
+                        written_brush_files.append(path)
                     if options.save_png:
                         path = _unique(os.path.join(brushes_dir, f"{safe_name}.png"))
                         write_png(path, tip.width, tip.height, pixels, channels=ch)
-                    if options.save_kpp:
-                        path = _unique(os.path.join(brushes_dir, f"{safe_name}.kpp"))
-                        write_kpp(
-                            path, tip,
-                            invert=options.invert,
-                            use_pressure=options.use_pressure,
-                        )
+                        written_brush_files.append(path)
                 imported_count += 1
             except Exception as exc:
                 file_errors.append(f"{tip.name or safe_name}: {exc}")
@@ -203,6 +206,7 @@ def import_abr_files(
                     path = _unique(os.path.join(pats_dir, f"{safe}.png"))
                     write_png(path, pat.width, pat.height,
                               pat.image_data, channels=pat.channels)
+                    written_pattern_files.append(path)
                 except Exception as exc:
                     result.pattern_errors.append(f"{pat.name}: {exc}")
 
@@ -214,15 +218,37 @@ def import_abr_files(
             error_summary = "; ".join(file_errors) if file_errors else None
             db.mark_imported(abr_path, error=error_summary)
 
+    # ── Generate .bundle file ─────────────────────────────────────
+    if result.imported > 0 and (written_brush_files or written_preset_files):
+        try:
+            # Derive bundle name from the first ABR file
+            first_abr = next(iter(paths), "ABR_Import")
+            bundle_stem = _sanitize(
+                os.path.splitext(os.path.basename(first_abr))[0]
+            ) or "ABR_Import"
+            bundle_path = _unique(os.path.join(resource_dir, f"{bundle_stem}.bundle"))
+            write_bundle(
+                bundle_path,
+                written_brush_files,
+                preset_files=written_preset_files or None,
+                pattern_files=written_pattern_files or None,
+                name=bundle_stem,
+                description=f"Imported from {os.path.basename(first_abr)}",
+            )
+        except Exception:
+            pass  # Bundle is a bonus; don't fail the import over it.
+
     # ── Replicate to extra resource directories ─────────────────
     if extra_resource_dirs and result.imported > 0:
         src_brushes = brushes_dest(resource_dir)
+        src_presets = paintoppresets_dest(resource_dir)
         src_patterns = patterns_dest(resource_dir)
         for extra_dir in extra_resource_dirs:
             if extra_dir == resource_dir:
                 continue
             for src_dir, dest_fn in [
                 (src_brushes, brushes_dest),
+                (src_presets, paintoppresets_dest),
                 (src_patterns, patterns_dest),
             ]:
                 if not os.path.isdir(src_dir):
@@ -231,6 +257,16 @@ def import_abr_files(
                 for fname in os.listdir(src_dir):
                     src_file = os.path.join(src_dir, fname)
                     dst_file = os.path.join(dst_dir, fname)
+                    if os.path.isfile(src_file) and not os.path.exists(dst_file):
+                        try:
+                            shutil.copy2(src_file, dst_file)
+                        except OSError:
+                            pass
+            # Replicate .bundle files from resource_dir root
+            for fname in os.listdir(resource_dir):
+                if fname.endswith(".bundle"):
+                    src_file = os.path.join(resource_dir, fname)
+                    dst_file = os.path.join(extra_dir, fname)
                     if os.path.isfile(src_file) and not os.path.exists(dst_file):
                         try:
                             shutil.copy2(src_file, dst_file)

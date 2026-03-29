@@ -25,9 +25,10 @@ from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QImage, QPixmap, QIcon
 
 from .abr_parser import ABRParser, BrushTip, BrushPattern
+from .bundle_writer import write_bundle
 from .gbr_writer import write_gbr, write_png
 from .kpp_writer import write_kpp
-from .utils import _sanitize, _unique, _choose_format, brushes_dest, patterns_dest
+from .utils import _sanitize, _unique, _choose_format, brushes_dest, patterns_dest, paintoppresets_dest
 from .auto_import import AutoImportSettings, scan_and_import
 from .import_db import ImportDB
 from .import_pipeline import ImportOptions
@@ -622,6 +623,7 @@ class ABRImporterDialog(QDialog):
             save_gbr = save_png = save_kpp = False  # determined per-tip below
 
         brushes_dir = brushes_dest(self.resource_dir)
+        presets_dir = paintoppresets_dest(self.resource_dir)
 
         invert = self.invert_check.isChecked()
         use_pressure = self.pressure_check.isChecked()
@@ -632,6 +634,9 @@ class ABRImporterDialog(QDialog):
 
         imported = 0
         errors: list = []
+        written_brush_files: list = []
+        written_preset_files: list = []
+        written_pattern_files: list = []
 
         for i, item in enumerate(selected):
             idx = item.data(Qt.UserRole)
@@ -644,11 +649,16 @@ class ABRImporterDialog(QDialog):
                 pixels = bytes(255 - b for b in pixels)
 
             try:
+                # Always write a .kpp preset to paintoppresets/
+                kpp_path = _unique(os.path.join(presets_dir, f"{safe_name}.kpp"))
+                write_kpp(kpp_path, tip, invert=invert, use_pressure=use_pressure)
+                written_preset_files.append(kpp_path)
+
+                # Also write brush tip (.gbr/.png) to brushes/
                 if use_best_match:
                     fmt = _choose_format(tip)
                     if fmt == "kpp":
-                        path = _unique(os.path.join(brushes_dir, f"{safe_name}.kpp"))
-                        write_kpp(path, tip, invert=invert, use_pressure=use_pressure)
+                        pass  # .kpp already written above
                     else:
                         from .abr_parser import ABRParser as _AP
                         gbr_pixels = _AP.get_grayscale(tip) if ch > 1 else pixels
@@ -658,6 +668,7 @@ class ABRImporterDialog(QDialog):
                         write_gbr(path, tip.name or safe_name,
                                   tip.width, tip.height, gbr_pixels, tip.spacing,
                                   channels=1)
+                        written_brush_files.append(path)
                 else:
                     if save_gbr:
                         from .abr_parser import ABRParser as _AP
@@ -668,13 +679,14 @@ class ABRImporterDialog(QDialog):
                         write_gbr(path, tip.name or safe_name,
                                   tip.width, tip.height, gbr_pixels, tip.spacing,
                                   channels=1)
+                        written_brush_files.append(path)
                     if save_png:
                         path = _unique(os.path.join(brushes_dir, f"{safe_name}.png"))
                         write_png(path, tip.width, tip.height, pixels,
                                   channels=ch)
+                        written_brush_files.append(path)
                     if save_kpp:
-                        path = _unique(os.path.join(brushes_dir, f"{safe_name}.kpp"))
-                        write_kpp(path, tip, invert=invert, use_pressure=use_pressure)
+                        pass  # .kpp already written to presets_dir above
                 imported += 1
             except Exception as exc:
                 errors.append(f"{tip.name}: {exc}")
@@ -691,25 +703,65 @@ class ABRImporterDialog(QDialog):
                     path = _unique(os.path.join(pats_dir, f"{safe}.png"))
                     write_png(path, pat.width, pat.height,
                               pat.image_data, channels=pat.channels)
+                    written_pattern_files.append(path)
                 except Exception as exc:
                     pat_errors.append(f"{pat.name}: {exc}")
 
         self.progress.setVisible(False)
 
+        # Generate .bundle file so Krita picks up brushes reliably
+        bundle_path = ""
+        if imported > 0 and (written_brush_files or written_preset_files):
+            try:
+                abr_name = self.file_label.text()
+                bundle_stem = _sanitize(
+                    os.path.splitext(os.path.basename(abr_name))[0]
+                ) or "ABR_Import"
+                bundle_path = _unique(
+                    os.path.join(self.resource_dir, f"{bundle_stem}.bundle")
+                )
+                write_bundle(
+                    bundle_path,
+                    written_brush_files,
+                    preset_files=written_preset_files or None,
+                    pattern_files=written_pattern_files or None,
+                    name=bundle_stem,
+                    description=f"Imported from {os.path.basename(abr_name)}",
+                )
+            except Exception:
+                bundle_path = ""
+
         # Replicate written files to all other Krita resource directories
         if imported > 0 and self.extra_resource_dirs:
             import shutil
             src_brushes = brushes_dir
+            src_presets = presets_dir
             for extra_dir in self.extra_resource_dirs:
                 if extra_dir == self.resource_dir:
                     continue
-                dst_brushes = brushes_dest(extra_dir)
-                for fname in os.listdir(src_brushes):
-                    src_f = os.path.join(src_brushes, fname)
-                    dst_f = os.path.join(dst_brushes, fname)
-                    if os.path.isfile(src_f) and not os.path.exists(dst_f):
+                for src_dir, dest_fn in [
+                    (src_brushes, brushes_dest),
+                    (src_presets, paintoppresets_dest),
+                ]:
+                    if not os.path.isdir(src_dir):
+                        continue
+                    dst_dir = dest_fn(extra_dir)
+                    for fname in os.listdir(src_dir):
+                        src_f = os.path.join(src_dir, fname)
+                        dst_f = os.path.join(dst_dir, fname)
+                        if os.path.isfile(src_f) and not os.path.exists(dst_f):
+                            try:
+                                shutil.copy2(src_f, dst_f)
+                            except OSError:
+                                pass
+                # Copy .bundle file too
+                if bundle_path and os.path.isfile(bundle_path):
+                    dst_bundle = os.path.join(
+                        extra_dir, os.path.basename(bundle_path)
+                    )
+                    if not os.path.exists(dst_bundle):
                         try:
-                            shutil.copy2(src_f, dst_f)
+                            shutil.copy2(bundle_path, dst_bundle)
                         except OSError:
                             pass
             if self.patterns_check.isChecked() and self.patterns:
@@ -737,9 +789,14 @@ class ABRImporterDialog(QDialog):
         msg = (
             f"Successfully imported {imported} of {len(selected)} brush(es) "
             f"into Krita's resource folder.\n\n"
-            f"Location: {brushes_dir}\n\n"
-            "The new brushes should appear in the Predefined Brush Tips "
-            "tab after Krita refreshes its resources.\n"
+            f"Presets: {presets_dir}\n"
+            f"Brush tips: {brushes_dir}\n"
+        )
+        if bundle_path:
+            msg += f"Bundle: {os.path.basename(bundle_path)}\n"
+        msg += (
+            "\nThe new brushes should appear in the Brush Presets "
+            "docker after Krita refreshes its resources.\n"
             "If they are not visible yet, go to Settings → Manage Resources "
             "or restart Krita."
         )
