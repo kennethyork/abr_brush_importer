@@ -362,6 +362,7 @@ class ABRImporterDialog(QDialog):
         self.recursive_check.toggled.connect(self._save_auto_settings)
         self.startup_check.toggled.connect(self._save_auto_settings)
         self.auto_refresh_check.toggled.connect(self._save_auto_settings)
+        self.pressure_check.toggled.connect(self._save_auto_settings)
 
     def _load_auto_settings(self) -> None:
         """Populate auto-import controls from the persisted settings."""
@@ -372,6 +373,7 @@ class ABRImporterDialog(QDialog):
             self.recursive_check.setChecked(s.watch_recursive)
             self.startup_check.setChecked(s.auto_import_on_startup)
             self.auto_refresh_check.setChecked(s.auto_refresh_resources)
+            self.pressure_check.setChecked(s.use_pressure)
             self._refresh_auto_status()
         except Exception:
             pass
@@ -385,6 +387,7 @@ class ABRImporterDialog(QDialog):
             s.watch_recursive = self.recursive_check.isChecked()
             s.auto_import_on_startup = self.startup_check.isChecked()
             s.auto_refresh_resources = self.auto_refresh_check.isChecked()
+            s.use_pressure = self.pressure_check.isChecked()
         except Exception:
             pass
 
@@ -437,7 +440,10 @@ class ABRImporterDialog(QDialog):
 
         self._save_auto_settings()
         s = AutoImportSettings(self.resource_dir)
-        options = ImportOptions(auto_refresh=s.auto_refresh_resources)
+        options = ImportOptions(
+            auto_refresh=s.auto_refresh_resources,
+            use_pressure=s.use_pressure,
+        )
         db = ImportDB(self.resource_dir)
 
         result = scan_and_import(

@@ -55,10 +55,17 @@ class ABRBrushImporter(Extension):
             resource_dir = self._get_resource_dir()
             db = ImportDB(resource_dir)
 
+            # Load persistent settings first so all import paths share the same
+            # user-configured options (including use_pressure).
+            settings = AutoImportSettings(resource_dir)
+
             # ── 1. Magic "abr_brushes" folder — always on ─────────
             magic_folder = os.path.join(resource_dir, ABR_BRUSHES_FOLDER)
             if os.path.isdir(magic_folder):
-                magic_options = ImportOptions(auto_refresh=True)
+                magic_options = ImportOptions(
+                    auto_refresh=True,
+                    use_pressure=settings.use_pressure,
+                )
                 self._startup_worker = _StartupImportThread(
                     magic_folder, resource_dir,
                     recursive=False, db=db, options=magic_options,
@@ -66,14 +73,16 @@ class ABRBrushImporter(Extension):
                 self._startup_worker.start()
 
             # ── 2. User-configured settings ───────────────────────
-            settings = AutoImportSettings(resource_dir)
             folder = settings.watch_folder_path
 
             if not folder or folder == magic_folder:
                 # Don't double-scan the same folder.
                 pass
             else:
-                options = ImportOptions(auto_refresh=settings.auto_refresh_resources)
+                options = ImportOptions(
+                    auto_refresh=settings.auto_refresh_resources,
+                    use_pressure=settings.use_pressure,
+                )
 
                 if settings.auto_import_on_startup:
                     # Run a one-shot scan if the startup worker isn't already
@@ -93,7 +102,10 @@ class ABRBrushImporter(Extension):
                 and settings.watch_folder_path
                 and FolderWatcherThread is not None
             ):
-                options = ImportOptions(auto_refresh=settings.auto_refresh_resources)
+                options = ImportOptions(
+                    auto_refresh=settings.auto_refresh_resources,
+                    use_pressure=settings.use_pressure,
+                )
                 self._watcher = FolderWatcherThread(
                     settings.watch_folder_path, resource_dir,
                     recursive=settings.watch_recursive,
@@ -151,7 +163,10 @@ class ABRBrushImporter(Extension):
                 and FolderWatcherThread is not None
             ):
                 db = ImportDB(resource_dir)
-                options = ImportOptions(auto_refresh=settings.auto_refresh_resources)
+                options = ImportOptions(
+                    auto_refresh=settings.auto_refresh_resources,
+                    use_pressure=settings.use_pressure,
+                )
                 self._watcher = FolderWatcherThread(
                     settings.watch_folder_path, resource_dir,
                     recursive=settings.watch_recursive,
