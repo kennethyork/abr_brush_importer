@@ -58,7 +58,7 @@ extracts the raw brush bitmap — but it stops there.  Every piece of
 The table below shows the full feature gap.
 
 | Feature | GIMP `file-abr` | This Krita plugin |
-|---------|:-:|:-:|
+| ------- | :-: | :-: |
 | **ABR version support** | | |
 | ABR v1 / v2 (legacy Photoshop) | ✅ | ✅ |
 | ABR v6 (CS, CS2) | ✅ | ✅ |
@@ -122,21 +122,34 @@ brush you import into Krita behaves the way it was designed to behave.
 
 ## Installation
 
-### Linux (quick install)
+### Linux — native Krita
 
 ```bash
 git clone https://github.com/kennethyork/abr_brush_importer.git
 cd abr_brush_importer
-bash install.sh
+bash install_local.sh
 ```
 
-The script copies all plugin files to
-`~/.local/share/krita/pykrita/abr_brush_importer/`.
+Installs to `~/.local/share/krita/pykrita/abr_brush_importer/`.
+
+### Linux — Flatpak Krita
+
+```bash
+git clone https://github.com/kennethyork/abr_brush_importer.git
+cd abr_brush_importer
+bash install_flatpak.sh
+```
+
+Installs to `~/.var/app/org.kde.krita/data/krita/pykrita/abr_brush_importer/`.
+
+> **Tip:** If you're not sure which you have, run `flatpak list | grep krita`.
+> If it prints a result, use `install_flatpak.sh`.
 
 ### Manual (any platform)
 
 1. Locate your Krita *pykrita* folder:
-   - **Linux**: `~/.local/share/krita/pykrita/`
+   - **Linux (native)**: `~/.local/share/krita/pykrita/`
+   - **Linux (Flatpak)**: `~/.var/app/org.kde.krita/data/krita/pykrita/`
    - **macOS**: `~/Library/Application Support/Krita/pykrita/`
    - **Windows**: `%APPDATA%\krita\pykrita\`
 2. Create a sub-folder named `abr_brush_importer/` inside it.
@@ -161,11 +174,12 @@ Krita's resource directory, drop your `.abr` files into it, and restart Krita.
 The plugin scans this folder **automatically on every startup** and imports any
 new or changed brushes — no dialog required.
 
-| Platform | Drop folder |
-|----------|-------------|
-| Linux    | `~/.local/share/krita/abr_brushes/` |
-| macOS    | `~/Library/Application Support/Krita/abr_brushes/` |
-| Windows  | `%APPDATA%\krita\abr_brushes\` |
+| Platform         | Drop folder                                        |
+| ---------------- | -------------------------------------------------- |
+| Linux (native)   | `~/.local/share/krita/abr_brushes/`                |
+| Linux (Flatpak)  | `~/.var/app/org.kde.krita/data/krita/abr_brushes/` |
+| macOS            | `~/Library/Application Support/Krita/abr_brushes/` |
+| Windows          | `%APPDATA%\krita\abr_brushes\`                     |
 
 Imported brushes appear in the **Predefined Brush Tips** panel. Files that have
 not changed since the last import are skipped automatically.
@@ -196,7 +210,7 @@ Open the importer via **Tools → Scripts → Import ABR Brushes…**
 The *Automatic Import* section of the dialog configures background importing:
 
 | Setting | Description |
-|---------|-------------|
+| ------- | ----------- |
 | **Enable continuous watcher** | Imports new `.abr` files as soon as they appear in the watch folder, without restarting Krita |
 | **Watch folder** | Custom folder to watch (leave blank to use the default drop folder) |
 | **Include sub-folders** | Scan the watch folder recursively |
@@ -211,7 +225,7 @@ Settings are saved automatically and restored on the next launch.
 ## Import options
 
 | Option | Description |
-|--------|-------------|
+| ------ | ----------- |
 | Best match (recommended) | `.kpp` for brushes with dynamics, `.gbr` otherwise |
 | Save as `.gbr` | Writes GIMP Brush v2 files (brush tip only) |
 | Also save as `.png` | Writes a plain PNG image of the brush tip |
@@ -252,16 +266,17 @@ python3 test_plugin.py
 All plugin data is stored under `<krita-resource-dir>/abr_importer_cache/`:
 
 | File | Purpose |
-|------|---------|
+| ---- | ------- |
 | `abr_import_db.json` | Tracks imported files (modification time, timestamp, errors) |
 | `auto_import_settings.json` | Persistent auto-import configuration |
 | `<hash>_<filename>` | Cached downloaded ABR and ZIP files |
 
-| Platform | Resource directory |
-|----------|--------------------|
-| Linux    | `~/.local/share/krita/` |
-| macOS    | `~/Library/Application Support/Krita/` |
-| Windows  | `%APPDATA%\krita\` |
+| Platform         | Resource directory                       |
+| ---------------- | ---------------------------------------- |
+| Linux (native)   | `~/.local/share/krita/`                  |
+| Linux (Flatpak)  | `~/.var/app/org.kde.krita/data/krita/`   |
+| macOS            | `~/Library/Application Support/Krita/`   |
+| Windows          | `%APPDATA%\krita\`                       |
 
 To free space, click **Clear Cache** in the plugin UI or delete the
 `abr_importer_cache/` folder manually.
