@@ -53,6 +53,7 @@ class ABRBrushImporter(Extension):
             from .import_pipeline import ImportOptions
 
             resource_dir = self._get_resource_dir()
+            extra_dirs = self._get_all_resource_dirs()
             db = ImportDB(resource_dir)
 
             # ── 1. Magic "abr_brushes" folder — always on ─────────
@@ -62,6 +63,7 @@ class ABRBrushImporter(Extension):
                 self._startup_worker = _StartupImportThread(
                     magic_folder, resource_dir,
                     recursive=False, db=db, options=magic_options,
+                    extra_resource_dirs=extra_dirs,
                 )
                 self._startup_worker.start()
 
@@ -82,6 +84,7 @@ class ABRBrushImporter(Extension):
                         folder, resource_dir,
                         recursive=settings.watch_recursive,
                         db=db, options=options,
+                        extra_resource_dirs=extra_dirs,
                     )
                     worker.start()
                     # Keep reference so Python doesn't GC it before it finishes.
@@ -98,6 +101,7 @@ class ABRBrushImporter(Extension):
                     settings.watch_folder_path, resource_dir,
                     recursive=settings.watch_recursive,
                     db=db, options=options,
+                    extra_resource_dirs=extra_dirs,
                 )
                 self._watcher.start()
 
@@ -116,8 +120,12 @@ class ABRBrushImporter(Extension):
         from .importer_dialog import ABRImporterDialog
 
         resource_dir = self._get_resource_dir()
+        extra_dirs = self._get_all_resource_dirs()
         parent_window = Krita.instance().activeWindow().qwindow()
-        dialog = ABRImporterDialog(resource_dir, parent_window)
+        dialog = ABRImporterDialog(
+            resource_dir, parent_window,
+            extra_resource_dirs=extra_dirs,
+        )
         dialog.exec_()
 
         # Restart the watcher if settings changed inside the dialog.
@@ -151,11 +159,13 @@ class ABRBrushImporter(Extension):
                 and FolderWatcherThread is not None
             ):
                 db = ImportDB(resource_dir)
+                extra_dirs = self._get_all_resource_dirs()
                 options = ImportOptions(auto_refresh=settings.auto_refresh_resources)
                 self._watcher = FolderWatcherThread(
                     settings.watch_folder_path, resource_dir,
                     recursive=settings.watch_recursive,
                     db=db, options=options,
+                    extra_resource_dirs=extra_dirs,
                 )
                 self._watcher.start()
         except Exception:
@@ -165,7 +175,16 @@ class ABRBrushImporter(Extension):
     def _get_resource_dir() -> str:
         """Return Krita's writable resource directory."""
         if sys.platform == "linux":
-            default = os.path.expanduser("~/.local/share/krita")
+            # Check all known Linux install locations; first match wins
+            candidates = [
+                os.path.expanduser("~/.var/app/org.kde.krita/data/krita"),  # Flatpak
+                os.path.expanduser("~/snap/krita/current/.local/share/krita"),  # Snap
+                os.path.expanduser("~/.local/share/krita"),  # Native / AppImage
+            ]
+            default = next(
+                (p for p in candidates if os.path.isdir(p)),
+                candidates[-1],
+            )
         elif sys.platform == "darwin":
             default = os.path.expanduser("~/Library/Application Support/Krita")
         elif sys.platform == "win32":
@@ -179,6 +198,29 @@ class ABRBrushImporter(Extension):
         os.makedirs(default, exist_ok=True)
         return default
 
+    @staticmethod
+    def _get_all_resource_dirs() -> list:
+        """Return every existing Krita resource directory (for multi-target writes)."""
+        if sys.platform == "linux":
+            candidates = [
+                os.path.expanduser("~/.var/app/org.kde.krita/data/krita"),
+                os.path.expanduser("~/snap/krita/current/.local/share/krita"),
+                os.path.expanduser("~/.local/share/krita"),
+            ]
+        elif sys.platform == "darwin":
+            candidates = [
+                os.path.expanduser("~/Library/Application Support/Krita"),
+            ]
+        elif sys.platform == "win32":
+            candidates = [
+                os.path.join(os.environ.get("APPDATA", ""), "krita"),
+            ]
+        else:
+            candidates = [
+                os.path.expanduser("~/.local/share/krita"),
+            ]
+        return [p for p in candidates if os.path.isdir(p)]
+
 
 # ------------------------------------------------------------------ #
 #  Startup import helper thread                                        #
@@ -191,13 +233,15 @@ try:
         """Runs a one-shot folder scan on a background thread at startup."""
 
         def __init__(self, watch_folder, resource_dir, *,
-                     recursive=False, db=None, options=None, parent=None):
+                     recursive=False, db=None, options=None,
+                     extra_resource_dirs=None, parent=None):
             super().__init__(parent)
             self._watch_folder = watch_folder
             self._resource_dir = resource_dir
             self._recursive = recursive
             self._db = db
             self._options = options
+            self._extra_resource_dirs = extra_resource_dirs
 
         def run(self):
             try:
@@ -206,6 +250,7 @@ try:
                     self._watch_folder, self._resource_dir,
                     recursive=self._recursive,
                     db=self._db, options=self._options,
+                    extra_resource_dirs=self._extra_resource_dirs,
                 )
             except Exception:
                 pass

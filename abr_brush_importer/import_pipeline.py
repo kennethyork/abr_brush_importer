@@ -12,6 +12,7 @@ Krita is not available.
 """
 
 import os
+import shutil
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -91,6 +92,7 @@ def import_abr_files(
     resource_dir: str,
     options: Optional[ImportOptions] = None,
     db=None,
+    extra_resource_dirs: Optional[List[str]] = None,
 ) -> ImportResult:
     """Parse and import all ``.abr`` files listed in *paths*.
 
@@ -105,6 +107,8 @@ def import_abr_files(
                       When provided, files that have not changed since
                       the last import are skipped and the DB is updated
                       after each file is processed.
+        extra_resource_dirs: Additional Krita resource directories to
+                      replicate written brush/pattern files into.
 
     Returns:
         :class:`ImportResult` with counts and per-brush error messages.
@@ -209,6 +213,29 @@ def import_abr_files(
         if db is not None:
             error_summary = "; ".join(file_errors) if file_errors else None
             db.mark_imported(abr_path, error=error_summary)
+
+    # ── Replicate to extra resource directories ─────────────────
+    if extra_resource_dirs and result.imported > 0:
+        src_brushes = brushes_dest(resource_dir)
+        src_patterns = patterns_dest(resource_dir)
+        for extra_dir in extra_resource_dirs:
+            if extra_dir == resource_dir:
+                continue
+            for src_dir, dest_fn in [
+                (src_brushes, brushes_dest),
+                (src_patterns, patterns_dest),
+            ]:
+                if not os.path.isdir(src_dir):
+                    continue
+                dst_dir = dest_fn(extra_dir)
+                for fname in os.listdir(src_dir):
+                    src_file = os.path.join(src_dir, fname)
+                    dst_file = os.path.join(dst_dir, fname)
+                    if os.path.isfile(src_file) and not os.path.exists(dst_file):
+                        try:
+                            shutil.copy2(src_file, dst_file)
+                        except OSError:
+                            pass
 
     # ── Refresh Krita resources ───────────────────────────────────
     if options.auto_refresh and result.imported > 0:

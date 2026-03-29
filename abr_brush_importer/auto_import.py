@@ -182,6 +182,7 @@ def scan_and_import(
     recursive: bool = False,
     db: ImportDB = None,
     options: ImportOptions = None,
+    extra_resource_dirs: list = None,
 ) -> ImportResult:
     """Scan *watch_folder* for ``.abr`` files and import new/changed ones.
 
@@ -220,7 +221,8 @@ def scan_and_import(
     if not abr_paths:
         return ImportResult()
 
-    return import_abr_files(abr_paths, resource_dir, options, db)
+    return import_abr_files(abr_paths, resource_dir, options, db,
+                            extra_resource_dirs=extra_resource_dirs)
 
 
 # ------------------------------------------------------------------ #
@@ -257,6 +259,7 @@ try:
             recursive: bool = False,
             db: ImportDB = None,
             options: ImportOptions = None,
+            extra_resource_dirs: list = None,
             parent=None,
         ) -> None:
             super().__init__(parent)
@@ -265,6 +268,7 @@ try:
             self._recursive = recursive
             self._db = db
             self._options = options or ImportOptions()
+            self._extra_resource_dirs = extra_resource_dirs
             self._stop_flag = False
 
         def stop(self) -> None:
@@ -314,7 +318,8 @@ try:
                 self.import_started.emit(path)
 
             result = import_abr_files(
-                changed, self._resource_dir, self._options, self._db
+                changed, self._resource_dir, self._options, self._db,
+                extra_resource_dirs=self._extra_resource_dirs,
             )
             self.import_finished.emit(result)
 

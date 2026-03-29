@@ -140,9 +140,10 @@ class BrushPreviewWidget(QLabel):
 class ABRImporterDialog(QDialog):
     """Import dialog for ABR brush files."""
 
-    def __init__(self, resource_dir: str, parent=None):
+    def __init__(self, resource_dir: str, parent=None, extra_resource_dirs=None):
         super().__init__(parent)
         self.resource_dir = resource_dir
+        self.extra_resource_dirs = extra_resource_dirs or []
         self.brushes: list = []
         self.patterns: list = []
 
@@ -694,6 +695,37 @@ class ABRImporterDialog(QDialog):
                     pat_errors.append(f"{pat.name}: {exc}")
 
         self.progress.setVisible(False)
+
+        # Replicate written files to all other Krita resource directories
+        if imported > 0 and self.extra_resource_dirs:
+            import shutil
+            src_brushes = brushes_dir
+            for extra_dir in self.extra_resource_dirs:
+                if extra_dir == self.resource_dir:
+                    continue
+                dst_brushes = brushes_dest(extra_dir)
+                for fname in os.listdir(src_brushes):
+                    src_f = os.path.join(src_brushes, fname)
+                    dst_f = os.path.join(dst_brushes, fname)
+                    if os.path.isfile(src_f) and not os.path.exists(dst_f):
+                        try:
+                            shutil.copy2(src_f, dst_f)
+                        except OSError:
+                            pass
+            if self.patterns_check.isChecked() and self.patterns:
+                src_pats = patterns_dest(self.resource_dir)
+                for extra_dir in self.extra_resource_dirs:
+                    if extra_dir == self.resource_dir:
+                        continue
+                    dst_pats = patterns_dest(extra_dir)
+                    for fname in os.listdir(src_pats):
+                        src_f = os.path.join(src_pats, fname)
+                        dst_f = os.path.join(dst_pats, fname)
+                        if os.path.isfile(src_f) and not os.path.exists(dst_f):
+                            try:
+                                shutil.copy2(src_f, dst_f)
+                            except OSError:
+                                pass
 
         # Attempt to notify Krita to refresh its resource cache
         try:
