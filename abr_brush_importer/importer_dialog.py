@@ -6,8 +6,9 @@ Provides:
   - Online ABR section: download .abr or .zip from a URL, with caching
   - Thumbnail list with brush names and dimensions
   - Large preview pane with metadata
-  - Options: output format (.gbr / .png), invert toggle
-  - Batch import of selected brushes to Krita's resource folder
+  - Options: Best-match (recommended) or advanced format selection
+  - Batch import directly into Krita's resource folder — no manual
+    file handling needed
 """
 
 import os
@@ -16,6 +17,7 @@ from PyQt5.QtWidgets import (
     QListWidget, QListWidgetItem, QFileDialog, QCheckBox,
     QProgressBar, QGroupBox, QMessageBox, QSplitter,
     QAbstractItemView, QComboBox, QInputDialog,
+    QAbstractItemView, QRadioButton, QButtonGroup, QWidget,
 )
 from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap, QIcon
@@ -24,6 +26,7 @@ from .abr_parser import ABRParser, BrushTip, BrushPattern
 from .gbr_writer import write_gbr, write_png
 from .kpp_writer import write_kpp
 from . import net_utils
+from .utils import _sanitize, _unique, _choose_format, brushes_dest, patterns_dest
 
 
 # ------------------------------------------------------------------ #
@@ -268,15 +271,51 @@ class ABRImporterDialog(QDialog):
         # ── Options ──
         opts_box = QGroupBox("Import Options")
         opts_lay = QVBoxLayout(opts_box)
+
+        # Status label
+        status_lbl = QLabel(
+            "Brushes are saved directly to Krita's resource folder — "
+            "no manual file handling needed."
+        )
+        status_lbl.setWordWrap(True)
+        opts_lay.addWidget(status_lbl)
+
+        # Mode selection — Best match vs Advanced
+        self.best_match_radio = QRadioButton("Best match (recommended)")
+        self.best_match_radio.setChecked(True)
+        self.best_match_radio.setToolTip(
+            "Saves a .kpp Krita Preset for brushes that carry dynamics "
+            "(spacing, scatter, jitter…), or a plain .gbr brush tip otherwise."
+        )
+        self.advanced_radio = QRadioButton("Advanced (choose formats)")
+        self._mode_group = QButtonGroup(self)
+        self._mode_group.addButton(self.best_match_radio)
+        self._mode_group.addButton(self.advanced_radio)
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(self.best_match_radio)
+        mode_row.addWidget(self.advanced_radio)
+        mode_row.addStretch()
+        opts_lay.addLayout(mode_row)
+
+        # Advanced format options (hidden while Best match is selected)
+        self._adv_widget = QWidget()
+        adv_lay = QVBoxLayout(self._adv_widget)
+        adv_lay.setContentsMargins(0, 0, 0, 0)
         fmt_row = QHBoxLayout()
-        self.gbr_check = QCheckBox("Save as .gbr (GIMP Brush)")
+        self.gbr_check = QCheckBox("Save as .gbr (GIMP Brush tip)")
         self.gbr_check.setChecked(True)
         self.png_check = QCheckBox("Also save as .png")
-        self.kpp_check = QCheckBox("Also save as .kpp (Krita Preset — preserves dynamics)")
         fmt_row.addWidget(self.gbr_check)
         fmt_row.addWidget(self.png_check)
-        opts_lay.addLayout(fmt_row)
-        opts_lay.addWidget(self.kpp_check)
+        adv_lay.addLayout(fmt_row)
+        self.kpp_check = QCheckBox("Also save as .kpp (Krita Preset — preserves dynamics)")
+        adv_lay.addWidget(self.kpp_check)
+        self._adv_widget.setVisible(False)
+        opts_lay.addWidget(self._adv_widget)
+
+        self.best_match_radio.toggled.connect(
+            lambda checked: self._adv_widget.setVisible(not checked)
+        )
 
         self.patterns_check = QCheckBox("Export embedded patterns as PNG")
         self.patterns_check.setVisible(False)
@@ -561,18 +600,22 @@ class ABRImporterDialog(QDialog):
             )
             return
 
-        save_gbr = self.gbr_check.isChecked()
-        save_png = self.png_check.isChecked()
-        save_kpp = self.kpp_check.isChecked()
-        if not save_gbr and not save_png and not save_kpp:
-            QMessageBox.warning(
-                self, "No Format",
-                "Please select at least one output format (.gbr, .png, or .kpp).",
-            )
-            return
+        use_best_match = self.best_match_radio.isChecked()
 
-        brushes_dir = os.path.join(self.resource_dir, "brushes")
-        os.makedirs(brushes_dir, exist_ok=True)
+        if not use_best_match:
+            save_gbr = self.gbr_check.isChecked()
+            save_png = self.png_check.isChecked()
+            save_kpp = self.kpp_check.isChecked()
+            if not save_gbr and not save_png and not save_kpp:
+                QMessageBox.warning(
+                    self, "No Format",
+                    "Please select at least one output format (.gbr, .png, or .kpp).",
+                )
+                return
+        else:
+            save_gbr = save_png = save_kpp = False  # determined per-tip below
+
+        brushes_dir = brushes_dest(self.resource_dir)
 
         invert = self.invert_check.isChecked()
         use_pressure = self.pressure_check.isChecked()
@@ -595,23 +638,37 @@ class ABRImporterDialog(QDialog):
                 pixels = bytes(255 - b for b in pixels)
 
             try:
-                if save_gbr:
-                    from .abr_parser import ABRParser as _AP
-                    # GBR works best with grayscale; convert RGBA/RGB
-                    gbr_pixels = _AP.get_grayscale(tip) if ch > 1 else pixels
-                    if invert and ch > 1:
-                        gbr_pixels = bytes(255 - b for b in gbr_pixels)
-                    path = _unique(os.path.join(brushes_dir, f"{safe_name}.gbr"))
-                    write_gbr(path, tip.name or safe_name,
-                              tip.width, tip.height, gbr_pixels, tip.spacing,
-                              channels=1)
-                if save_png:
-                    path = _unique(os.path.join(brushes_dir, f"{safe_name}.png"))
-                    write_png(path, tip.width, tip.height, pixels,
-                              channels=ch)
-                if save_kpp:
-                    path = _unique(os.path.join(brushes_dir, f"{safe_name}.kpp"))
-                    write_kpp(path, tip, invert=invert, use_pressure=use_pressure)
+                if use_best_match:
+                    fmt = _choose_format(tip)
+                    if fmt == "kpp":
+                        path = _unique(os.path.join(brushes_dir, f"{safe_name}.kpp"))
+                        write_kpp(path, tip, invert=invert, use_pressure=use_pressure)
+                    else:
+                        from .abr_parser import ABRParser as _AP
+                        gbr_pixels = _AP.get_grayscale(tip) if ch > 1 else pixels
+                        if invert and ch > 1:
+                            gbr_pixels = bytes(255 - b for b in gbr_pixels)
+                        path = _unique(os.path.join(brushes_dir, f"{safe_name}.gbr"))
+                        write_gbr(path, tip.name or safe_name,
+                                  tip.width, tip.height, gbr_pixels, tip.spacing,
+                                  channels=1)
+                else:
+                    if save_gbr:
+                        from .abr_parser import ABRParser as _AP
+                        gbr_pixels = _AP.get_grayscale(tip) if ch > 1 else pixels
+                        if invert and ch > 1:
+                            gbr_pixels = bytes(255 - b for b in gbr_pixels)
+                        path = _unique(os.path.join(brushes_dir, f"{safe_name}.gbr"))
+                        write_gbr(path, tip.name or safe_name,
+                                  tip.width, tip.height, gbr_pixels, tip.spacing,
+                                  channels=1)
+                    if save_png:
+                        path = _unique(os.path.join(brushes_dir, f"{safe_name}.png"))
+                        write_png(path, tip.width, tip.height, pixels,
+                                  channels=ch)
+                    if save_kpp:
+                        path = _unique(os.path.join(brushes_dir, f"{safe_name}.kpp"))
+                        write_kpp(path, tip, invert=invert, use_pressure=use_pressure)
                 imported += 1
             except Exception as exc:
                 errors.append(f"{tip.name}: {exc}")
@@ -621,12 +678,11 @@ class ABRImporterDialog(QDialog):
         # Export patterns if requested
         pat_errors: list = []
         if self.patterns_check.isChecked() and self.patterns:
-            patterns_dir = os.path.join(self.resource_dir, "patterns")
-            os.makedirs(patterns_dir, exist_ok=True)
+            pats_dir = patterns_dest(self.resource_dir)
             for pat in self.patterns:
                 try:
                     safe = _sanitize(pat.name or "pattern")
-                    path = _unique(os.path.join(patterns_dir, f"{safe}.png"))
+                    path = _unique(os.path.join(pats_dir, f"{safe}.png"))
                     write_png(path, pat.width, pat.height,
                               pat.image_data, channels=pat.channels)
                 except Exception as exc:
@@ -634,18 +690,28 @@ class ABRImporterDialog(QDialog):
 
         self.progress.setVisible(False)
 
+        # Attempt to notify Krita to refresh its resource cache
+        try:
+            from krita import Krita as _Krita
+            _Krita.instance().notifySettingsUpdated()
+        except Exception:
+            pass
+
         msg = (
-            f"Successfully imported {imported} of {len(selected)} brush(es)\n"
-            f"to: {brushes_dir}\n\n"
-            "Restart Krita or go to Settings → Manage Resources\n"
-            "to see the new brush tips in the Predefined tab."
+            f"Successfully imported {imported} of {len(selected)} brush(es) "
+            f"into Krita's resource folder.\n\n"
+            f"Location: {brushes_dir}\n\n"
+            "The new brushes should appear in the Predefined Brush Tips "
+            "tab after Krita refreshes its resources.\n"
+            "If they are not visible yet, go to Settings → Manage Resources "
+            "or restart Krita."
         )
         if self.patterns_check.isChecked() and self.patterns:
             exported_pats = len(self.patterns) - len(pat_errors)
             msg += (
                 f"\n\nPatterns: exported {exported_pats} of "
                 f"{len(self.patterns)} to: "
-                f"{os.path.join(self.resource_dir, 'patterns')}"
+                f"{patterns_dest(self.resource_dir)}"
             )
         if errors:
             msg += f"\n\nBrush errors ({len(errors)}):\n" + "\n".join(errors[:10])
@@ -654,22 +720,3 @@ class ABRImporterDialog(QDialog):
 
         QMessageBox.information(self, "Import Complete", msg)
 
-
-# ------------------------------------------------------------------ #
-#  Filename helpers                                                    #
-# ------------------------------------------------------------------ #
-
-def _sanitize(name: str) -> str:
-    safe = "".join(c if c.isalnum() or c in " -_." else "_" for c in name)
-    safe = safe.strip().strip(".")
-    return safe[:100] if safe else "brush"
-
-
-def _unique(path: str) -> str:
-    if not os.path.exists(path):
-        return path
-    base, ext = os.path.splitext(path)
-    n = 1
-    while os.path.exists(f"{base}_{n}{ext}"):
-        n += 1
-    return f"{base}_{n}{ext}"
