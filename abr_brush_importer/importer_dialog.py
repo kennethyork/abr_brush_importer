@@ -654,21 +654,17 @@ class ABRImporterDialog(QDialog):
                 write_kpp(kpp_path, tip, invert=invert, use_pressure=use_pressure)
                 written_preset_files.append(kpp_path)
 
-                # Also write brush tip (.gbr/.png) to brushes/
+                # Also write brush tip (.gbr) to brushes/
                 if use_best_match:
-                    fmt = _choose_format(tip)
-                    if fmt == "kpp":
-                        pass  # .kpp already written above
-                    else:
-                        from .abr_parser import ABRParser as _AP
-                        gbr_pixels = _AP.get_grayscale(tip) if ch > 1 else pixels
-                        if invert and ch > 1:
-                            gbr_pixels = bytes(255 - b for b in gbr_pixels)
-                        path = _unique(os.path.join(brushes_dir, f"{safe_name}.gbr"))
-                        write_gbr(path, tip.name or safe_name,
-                                  tip.width, tip.height, gbr_pixels, tip.spacing,
-                                  channels=1)
-                        written_brush_files.append(path)
+                    from .abr_parser import ABRParser as _AP
+                    gbr_pixels = _AP.get_grayscale(tip) if ch > 1 else pixels
+                    if invert and ch > 1:
+                        gbr_pixels = bytes(255 - b for b in gbr_pixels)
+                    path = _unique(os.path.join(brushes_dir, f"{safe_name}.gbr"))
+                    write_gbr(path, tip.name or safe_name,
+                              tip.width, tip.height, gbr_pixels, tip.spacing,
+                              channels=1)
+                    written_brush_files.append(path)
                 else:
                     if save_gbr:
                         from .abr_parser import ABRParser as _AP
