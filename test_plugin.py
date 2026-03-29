@@ -207,6 +207,12 @@ assert "0.2500" in xml   # spacing
 assert "0.8000" in xml   # opacity
 assert "0.9000" in xml   # flow
 assert "my_brush.gbr" in xml
+# New dynamics params that GIMP cannot preserve
+assert "hardness" in xml, "hardness param missing from preset.xml"
+assert "AutoSmoothing/isChecked" in xml, "AutoSmoothing param missing from preset.xml"
+assert "Scatter/value" in xml, "Scatter/value param missing from preset.xml"
+assert "SizeJitter/value" in xml, "SizeJitter/value param missing from preset.xml"
+assert "AngleJitter/value" in xml, "AngleJitter/value param missing from preset.xml"
 print("_make_preset_xml: OK")
 
 # ── 15) Test _make_thumbnail produces valid PNG ──
@@ -232,7 +238,57 @@ with zipfile.ZipFile(kpp_dyn_path, 'r') as zf:
     xml_content = zf.read("preset.xml").decode("utf-8")
     assert "0.7500" in xml_content, "opacity not preserved in preset.xml"
     assert "0.9000" in xml_content, "flow not preserved in preset.xml"
+    # Default dynamics: hardness=100 → 1.0000, smoothing=False
+    assert '<param name="hardness" type="float">1.0000</param>' in xml_content, \
+           "hardness not in preset.xml"
+    assert '<param name="AutoSmoothing/isChecked" type="bool">false</param>' in xml_content, \
+           "AutoSmoothing missing from preset.xml"
 print("write_kpp with dynamics: OK")
+
+# ── 16b) Test write_kpp with extended dynamics (hardness, scatter, jitter, smoothing) ──
+ext_tip = BrushTip()
+ext_tip.name = "Extended Dynamics"
+ext_tip.width = 24
+ext_tip.height = 12
+ext_tip.spacing = 30
+ext_tip.roundness = 50   # elliptical brush
+ext_tip.hardness = 75
+ext_tip.channels = 1
+ext_tip.image_data = bytes([180] * (24 * 12))
+ext_tip.dynamics = BrushDynamics(
+    spacing=30, opacity=60, flow=80,
+    hardness=75, roundness=50,
+    scatter=500, count=3,
+    size_jitter=40, angle_jitter=180,
+    smoothing=True,
+)
+
+kpp_ext_path = os.path.join(tmp2, "test_ext.kpp")
+write_kpp(kpp_ext_path, ext_tip)
+with zipfile.ZipFile(kpp_ext_path, 'r') as zf:
+    xml_content = zf.read("preset.xml").decode("utf-8")
+    # Hardness: 75% → 0.7500
+    assert '<param name="hardness" type="float">0.7500</param>' in xml_content, \
+           f"hardness 0.7500 not found in preset.xml"
+    # Ratio/roundness: 50% → ratio=0.5000 in brush_definition (XML-escaped as &quot;)
+    assert 'ratio=&quot;0.5000&quot;' in xml_content, \
+           "roundness/ratio not found in preset.xml"
+    # Scatter: 500/1000 * 10 = 5.0
+    assert '<param name="Scatter/value" type="float">5.0000</param>' in xml_content, \
+           "scatter value not found in preset.xml"
+    # Scatter count: 3
+    assert "<param name=\"Scatter/count\" type=\"int\">3</param>" in xml_content, \
+           "scatter count not found in preset.xml"
+    # Size jitter: 40% → 0.4000
+    assert '<param name="SizeJitter/value" type="float">0.4000</param>' in xml_content, \
+           "size jitter not found in preset.xml"
+    # Angle jitter: 180°/360° = 0.5000
+    assert '<param name="AngleJitter/value" type="float">0.5000</param>' in xml_content, \
+           "angle jitter not found in preset.xml"
+    # Smoothing: True → "true"
+    assert '<param name="AutoSmoothing/isChecked" type="bool">true</param>' in xml_content, \
+           "smoothing not enabled in preset.xml"
+print("write_kpp with extended dynamics: OK")
 
 # ── 17) Test write_kpp with invert ──
 inv_tip = BrushTip(name="Inverted", width=4, height=4, channels=1,

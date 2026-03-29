@@ -59,6 +59,20 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False) -> None:
     flow = (dyn.flow / 100.0) if dyn else 1.0
     angle = getattr(tip, 'angle', 0) if tip.brush_type == 1 else (dyn.angle if dyn else 0)
 
+    # --- Extended dynamics (properties GIMP cannot preserve) ---
+    # Hardness: use dynamics value if available, otherwise fall back to tip value.
+    hardness = (dyn.hardness / 100.0) if dyn else (tip.hardness / 100.0)
+    # Roundness/ratio: controls the Y/X aspect ratio of the brush tip ellipse.
+    ratio = (dyn.roundness / 100.0) if dyn else (tip.roundness / 100.0)
+    # Scatter: Photoshop stores scatter 0–1000 (%); map to 0–10 for Krita.
+    scatter = (dyn.scatter / 1000.0 * 10.0) if dyn else 0.0
+    scatter_count = max(1, dyn.count) if dyn else 1
+    # Size and angle jitter for randomised stroke variation.
+    size_jitter = (dyn.size_jitter / 100.0) if dyn else 0.0
+    angle_jitter = (dyn.angle_jitter / 360.0) if dyn else 0.0
+    # Stroke stabiliser.
+    smoothing = dyn.smoothing if dyn else False
+
     # --- Build components ---
     gbr_bytes = _make_gbr_bytes(name, tip.width, tip.height, gray, tip.spacing)
     thumb_bytes = _make_thumbnail(tip, 64)
@@ -70,6 +84,13 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False) -> None:
         opacity=opacity,
         flow=flow,
         angle=angle,
+        hardness=hardness,
+        ratio=ratio,
+        scatter=scatter,
+        scatter_count=scatter_count,
+        size_jitter=size_jitter,
+        angle_jitter=angle_jitter,
+        smoothing=smoothing,
     )
 
     # --- Pack into ZIP ---
@@ -90,8 +111,34 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False) -> None:
 
 def _make_preset_xml(name: str, tip_filename: str, size: float,
                      spacing: float, opacity: float, flow: float,
-                     angle: int = 0) -> str:
-    """Return the preset.xml string for a Krita pixel brush preset."""
+                     angle: int = 0, hardness: float = 1.0,
+                     ratio: float = 1.0, scatter: float = 0.0,
+                     scatter_count: int = 1, size_jitter: float = 0.0,
+                     angle_jitter: float = 0.0,
+                     smoothing: bool = False) -> str:
+    """Return the preset.xml string for a Krita pixel brush preset.
+
+    All parameters beyond *angle* correspond to Photoshop brush dynamics that
+    GIMP's ABR importer discards.  Preserving them here is the key advantage
+    of this importer over a plain GBR export.
+
+    Parameters
+    ----------
+    hardness : float
+        Brush edge hardness (0–1).  Controls the soft-to-hard falloff.
+    ratio : float
+        Y/X aspect ratio of the brush ellipse (0–1).  1.0 = circular.
+    scatter : float
+        Random position offset amount for each dab (0–10).
+    scatter_count : int
+        Number of dabs placed per stamp when scatter is active.
+    size_jitter : float
+        Random size variation per dab (0–1).
+    angle_jitter : float
+        Random angle variation per dab (0–1, where 1 = full 360°).
+    smoothing : bool
+        Enable Krita's stroke stabiliser (AutoSmoothing).
+    """
 
     # The brush_definition is an XML snippet embedded (escaped) inside the
     # outer XML.  It tells Krita which brush tip file to load and how.
@@ -99,11 +146,14 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
         f'<BrushPreset autoSpacingCoeff="1" angle="{angle}" '
         f'brush_style="predefined_brush" diameter="{int(size)}" '
         f'filename="{_xml_escape(tip_filename)}" '
-        f'name="{_xml_escape(name)}" ratio="1" scale="1" '
+        f'name="{_xml_escape(name)}" ratio="{ratio:.4f}" scale="1" '
         f'spacing="{spacing:.4f}" type="auto_brush">'
         f'</BrushPreset>'
     )
     brush_def_escaped = _xml_escape(brush_def_inner)
+
+    smoothing_str = "true" if smoothing else "false"
+    scatter_random_str = "true" if scatter > 0.0 else "false"
 
     xml = (
         '<!DOCTYPE KritaShapeLayer>\n'
@@ -118,6 +168,13 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
         f'    <param name="size" type="float">{size:.1f}</param>\n'
         f'    <param name="Opacity/value" type="float">{opacity:.4f}</param>\n'
         f'    <param name="flow" type="float">{flow:.4f}</param>\n'
+        f'    <param name="hardness" type="float">{hardness:.4f}</param>\n'
+        f'    <param name="AutoSmoothing/isChecked" type="bool">{smoothing_str}</param>\n'
+        f'    <param name="Scatter/value" type="float">{scatter:.4f}</param>\n'
+        f'    <param name="Scatter/useRandomOffset" type="bool">{scatter_random_str}</param>\n'
+        f'    <param name="Scatter/count" type="int">{scatter_count}</param>\n'
+        f'    <param name="SizeJitter/value" type="float">{size_jitter:.4f}</param>\n'
+        f'    <param name="AngleJitter/value" type="float">{angle_jitter:.4f}</param>\n'
         '  </param>\n'
         '</params>\n'
     )
