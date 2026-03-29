@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from abr_brush_importer.abr_parser import parse_abr
 from abr_brush_importer.gbr_writer import write_gbr, write_png
+from abr_brush_importer.kpp_writer import write_kpp
 
 
 def _sanitize(name: str) -> str:
@@ -65,16 +66,29 @@ def main() -> None:
 
         gbr_path = os.path.join(output_dir, f"{safe}.gbr")
         png_path = os.path.join(output_dir, f"{safe}.png")
+        kpp_path = os.path.join(output_dir, f"{safe}.kpp")
 
         from abr_brush_importer.abr_parser import ABRParser
         gray_data = ABRParser.get_grayscale(tip) if tip.channels > 1 else tip.image_data
         write_gbr(gbr_path, name, tip.width, tip.height, gray_data, tip.spacing)
         write_png(png_path, tip.width, tip.height, tip.image_data, channels=tip.channels)
+        write_kpp(kpp_path, tip)
 
         print(f"  [{i + 1}/{len(brushes)}] {name} ({tip.width}×{tip.height})")
 
+    if patterns:
+        print(f"\nExporting {len(patterns)} pattern(s)…")
+        for pat in patterns:
+            safe = _sanitize(pat.name or "pattern")
+            if not safe:
+                safe = "pattern"
+            pat_path = os.path.join(output_dir, f"{safe}_pattern.png")
+            write_png(pat_path, pat.width, pat.height,
+                      pat.image_data, channels=pat.channels)
+            print(f"  Pattern: {pat.name} ({pat.width}×{pat.height})")
+
     print(f"\nDone! Files saved to: {output_dir}")
-    print("Copy the .gbr files to ~/.local/share/krita/brushes/ and restart Krita.")
+    print("Copy the .gbr/.kpp files to ~/.local/share/krita/brushes/ and restart Krita.")
 
 
 if __name__ == "__main__":

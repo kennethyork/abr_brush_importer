@@ -21,6 +21,7 @@ from PyQt5.QtGui import QImage, QPixmap, QIcon
 
 from .abr_parser import ABRParser, BrushTip, BrushPattern
 from .gbr_writer import write_gbr, write_png
+from .kpp_writer import write_kpp
 
 
 # ------------------------------------------------------------------ #
@@ -198,9 +199,15 @@ class ABRImporterDialog(QDialog):
         self.gbr_check = QCheckBox("Save as .gbr (GIMP Brush)")
         self.gbr_check.setChecked(True)
         self.png_check = QCheckBox("Also save as .png")
+        self.kpp_check = QCheckBox("Also save as .kpp (Krita Preset — preserves dynamics)")
         fmt_row.addWidget(self.gbr_check)
         fmt_row.addWidget(self.png_check)
         opts_lay.addLayout(fmt_row)
+        opts_lay.addWidget(self.kpp_check)
+
+        self.patterns_check = QCheckBox("Export embedded patterns as PNG")
+        self.patterns_check.setVisible(False)
+        opts_lay.addWidget(self.patterns_check)
 
         self.invert_check = QCheckBox(
             "Invert brush images (use if brushes appear inverted)"
@@ -274,8 +281,17 @@ class ABRImporterDialog(QDialog):
         if self.brushes:
             self.brush_list.setCurrentRow(0)
 
+        pat_count = len(self.patterns)
+        self.patterns_check.setVisible(pat_count > 0)
+        if pat_count > 0:
+            self.patterns_check.setText(
+                f"Export {pat_count} embedded pattern(s) as PNG"
+            )
+            self.patterns_check.setChecked(True)
+
         self.file_label.setText(
             f"{filepath} — {len(self.brushes)} brush(es) found"
+            + (f", {pat_count} pattern(s)" if pat_count else "")
         )
 
     def _on_selection_changed(self, current, _previous) -> None:
@@ -340,10 +356,11 @@ class ABRImporterDialog(QDialog):
 
         save_gbr = self.gbr_check.isChecked()
         save_png = self.png_check.isChecked()
-        if not save_gbr and not save_png:
+        save_kpp = self.kpp_check.isChecked()
+        if not save_gbr and not save_png and not save_kpp:
             QMessageBox.warning(
                 self, "No Format",
-                "Please select at least one output format (.gbr or .png).",
+                "Please select at least one output format (.gbr, .png, or .kpp).",
             )
             return
 
@@ -384,11 +401,28 @@ class ABRImporterDialog(QDialog):
                     path = _unique(os.path.join(brushes_dir, f"{safe_name}.png"))
                     write_png(path, tip.width, tip.height, pixels,
                               channels=ch)
+                if save_kpp:
+                    path = _unique(os.path.join(brushes_dir, f"{safe_name}.kpp"))
+                    write_kpp(path, tip, invert=invert)
                 imported += 1
             except Exception as exc:
                 errors.append(f"{tip.name}: {exc}")
 
             self.progress.setValue(i + 1)
+
+        # Export patterns if requested
+        pat_errors: list = []
+        if self.patterns_check.isChecked() and self.patterns:
+            patterns_dir = os.path.join(self.resource_dir, "patterns")
+            os.makedirs(patterns_dir, exist_ok=True)
+            for pat in self.patterns:
+                try:
+                    safe = _sanitize(pat.name or "pattern")
+                    path = _unique(os.path.join(patterns_dir, f"{safe}.png"))
+                    write_png(path, pat.width, pat.height,
+                              pat.image_data, channels=pat.channels)
+                except Exception as exc:
+                    pat_errors.append(f"{pat.name}: {exc}")
 
         self.progress.setVisible(False)
 
@@ -398,8 +432,17 @@ class ABRImporterDialog(QDialog):
             "Restart Krita or go to Settings → Manage Resources\n"
             "to see the new brush tips in the Predefined tab."
         )
+        if self.patterns_check.isChecked() and self.patterns:
+            exported_pats = len(self.patterns) - len(pat_errors)
+            msg += (
+                f"\n\nPatterns: exported {exported_pats} of "
+                f"{len(self.patterns)} to: "
+                f"{os.path.join(self.resource_dir, 'patterns')}"
+            )
         if errors:
-            msg += f"\n\nErrors ({len(errors)}):\n" + "\n".join(errors[:10])
+            msg += f"\n\nBrush errors ({len(errors)}):\n" + "\n".join(errors[:10])
+        if pat_errors:
+            msg += f"\n\nPattern errors ({len(pat_errors)}):\n" + "\n".join(pat_errors[:5])
 
         QMessageBox.information(self, "Import Complete", msg)
 
