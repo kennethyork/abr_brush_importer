@@ -531,6 +531,7 @@ assert s.watch_folder_path == "", "AutoImportSettings: default folder empty"
 assert s.watch_recursive is False, "AutoImportSettings: default recursive=False"
 assert s.auto_import_on_startup is False, "AutoImportSettings: default startup=False"
 assert s.auto_refresh_resources is True, "AutoImportSettings: default refresh=True"
+assert s.use_pressure is True, "AutoImportSettings: default use_pressure=True"
 assert isinstance(s.max_download_bytes, int), "AutoImportSettings: max_download_bytes is int"
 assert isinstance(s.auto_download_urls, list), "AutoImportSettings: auto_download_urls is list"
 
@@ -540,6 +541,7 @@ s.watch_folder_path = "/tmp/abr_test"
 s.watch_recursive = True
 s.auto_import_on_startup = True
 s.auto_refresh_resources = False
+s.use_pressure = False
 
 # Reload from disk
 s2 = AutoImportSettings(tmp_cfg)
@@ -548,6 +550,7 @@ assert s2.watch_folder_path == "/tmp/abr_test", "AutoImportSettings: persisted f
 assert s2.watch_recursive is True, "AutoImportSettings: persisted recursive"
 assert s2.auto_import_on_startup is True, "AutoImportSettings: persisted startup"
 assert s2.auto_refresh_resources is False, "AutoImportSettings: persisted refresh"
+assert s2.use_pressure is False, "AutoImportSettings: persisted use_pressure"
 
 shutil.rmtree(tmp_cfg)
 print("AutoImportSettings: OK")

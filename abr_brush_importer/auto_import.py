@@ -31,6 +31,7 @@ _DEFAULTS: dict = {
     "watch_recursive": False,
     "auto_import_on_startup": False,
     "auto_refresh_resources": True,
+    "use_pressure": True,
     "max_download_bytes": 200 * 1024 * 1024,
     "auto_download_urls": [],
 }
@@ -153,6 +154,14 @@ class AutoImportSettings:
     @auto_refresh_resources.setter
     def auto_refresh_resources(self, value: bool) -> None:
         self.set("auto_refresh_resources", bool(value))
+
+    @property
+    def use_pressure(self) -> bool:
+        return self.get("use_pressure")
+
+    @use_pressure.setter
+    def use_pressure(self, value: bool) -> None:
+        self.set("use_pressure", bool(value))
 
     @property
     def max_download_bytes(self) -> int:
