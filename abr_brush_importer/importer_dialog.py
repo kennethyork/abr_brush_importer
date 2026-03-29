@@ -9,15 +9,19 @@ Provides:
   - Options: Best-match (recommended) or advanced format selection
   - Batch import directly into Krita's resource folder — no manual
     file handling needed
+  - Automatic Import settings: configure a watch folder, startup import,
+    and a continuous background watcher
 """
 
 import os
+import time as _time
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QListWidget, QListWidgetItem, QFileDialog, QCheckBox,
     QProgressBar, QGroupBox, QMessageBox, QSplitter,
     QAbstractItemView, QComboBox, QInputDialog,
     QAbstractItemView, QRadioButton, QButtonGroup, QWidget,
+    QLineEdit,
 )
 from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap, QIcon
@@ -27,6 +31,9 @@ from .gbr_writer import write_gbr, write_png
 from .kpp_writer import write_kpp
 from . import net_utils
 from .utils import _sanitize, _unique, _choose_format, brushes_dest, patterns_dest
+from .auto_import import AutoImportSettings, scan_and_import
+from .import_db import ImportDB
+from .import_pipeline import ImportOptions
 
 
 # ------------------------------------------------------------------ #
@@ -333,6 +340,9 @@ class ABRImporterDialog(QDialog):
         opts_lay.addWidget(self.pressure_check)
         root.addWidget(opts_box)
 
+        # ── Auto Import ──
+        self._build_auto_import_ui(root)
+
         # ── Progress ──
         self.progress = QProgressBar()
         self.progress.setVisible(False)
@@ -352,6 +362,186 @@ class ABRImporterDialog(QDialog):
         btn_row.addWidget(self.import_btn)
         btn_row.addWidget(close_btn)
         root.addLayout(btn_row)
+
+    # ---------- Auto Import UI construction ----------
+
+    def _build_auto_import_ui(self, root: QVBoxLayout) -> None:
+        """Add the Automatic Import settings group to *root*."""
+        from . import __init__ as _init_mod
+        magic_folder = os.path.join(
+            self.resource_dir, _init_mod.ABR_BRUSHES_FOLDER
+        )
+
+        auto_box = QGroupBox("Automatic Import")
+        auto_lay = QVBoxLayout(auto_box)
+
+        # Magic-folder hint
+        hint = QLabel(
+            f"<b>Drop folder:</b> Place <code>.abr</code> files in "
+            f"<code>{magic_folder}</code> — they are imported automatically "
+            f"every time Krita starts."
+        )
+        hint.setWordWrap(True)
+        hint.setTextFormat(Qt.RichText)
+        auto_lay.addWidget(hint)
+
+        # Enable continuous watcher
+        self.auto_enable_check = QCheckBox(
+            "Enable continuous watcher (import new files without restarting Krita)"
+        )
+        auto_lay.addWidget(self.auto_enable_check)
+
+        # Watch folder row
+        folder_row = QHBoxLayout()
+        folder_row.addWidget(QLabel("Watch folder:"))
+        self.watch_folder_edit = QLineEdit()
+        self.watch_folder_edit.setPlaceholderText(
+            f"Leave blank to use the drop folder above ({magic_folder})"
+        )
+        folder_row.addWidget(self.watch_folder_edit, 1)
+        browse_btn = QPushButton("Browse…")
+        browse_btn.clicked.connect(self._browse_watch_folder)
+        folder_row.addWidget(browse_btn)
+        auto_lay.addLayout(folder_row)
+
+        # Sub-options row
+        sub_row = QHBoxLayout()
+        self.recursive_check = QCheckBox("Include sub-folders")
+        self.startup_check = QCheckBox("Import on Krita startup")
+        self.auto_refresh_check = QCheckBox("Refresh resources after import")
+        sub_row.addWidget(self.recursive_check)
+        sub_row.addWidget(self.startup_check)
+        sub_row.addWidget(self.auto_refresh_check)
+        sub_row.addStretch()
+        auto_lay.addLayout(sub_row)
+
+        # Status + action row
+        status_row = QHBoxLayout()
+        self.auto_status_label = QLabel("Status: —")
+        self.auto_status_label.setWordWrap(True)
+        scan_now_btn = QPushButton("Scan Now")
+        scan_now_btn.setToolTip(
+            "Immediately scan the watch folder and import any new .abr files"
+        )
+        scan_now_btn.clicked.connect(self._scan_now)
+        status_row.addWidget(self.auto_status_label, 1)
+        status_row.addWidget(scan_now_btn)
+        auto_lay.addLayout(status_row)
+
+        root.addWidget(auto_box)
+
+        # Populate from saved settings
+        self._load_auto_settings()
+
+        # Save settings whenever a control changes
+        self.auto_enable_check.toggled.connect(self._save_auto_settings)
+        self.watch_folder_edit.editingFinished.connect(self._save_auto_settings)
+        self.recursive_check.toggled.connect(self._save_auto_settings)
+        self.startup_check.toggled.connect(self._save_auto_settings)
+        self.auto_refresh_check.toggled.connect(self._save_auto_settings)
+
+    def _load_auto_settings(self) -> None:
+        """Populate auto-import controls from the persisted settings."""
+        try:
+            s = AutoImportSettings(self.resource_dir)
+            self.auto_enable_check.setChecked(s.auto_import_enabled)
+            self.watch_folder_edit.setText(s.watch_folder_path)
+            self.recursive_check.setChecked(s.watch_recursive)
+            self.startup_check.setChecked(s.auto_import_on_startup)
+            self.auto_refresh_check.setChecked(s.auto_refresh_resources)
+            self._refresh_auto_status()
+        except Exception:
+            pass
+
+    def _save_auto_settings(self) -> None:
+        """Write the current control values to the settings file."""
+        try:
+            s = AutoImportSettings(self.resource_dir)
+            s.auto_import_enabled = self.auto_enable_check.isChecked()
+            s.watch_folder_path = self.watch_folder_edit.text().strip()
+            s.watch_recursive = self.recursive_check.isChecked()
+            s.auto_import_on_startup = self.startup_check.isChecked()
+            s.auto_refresh_resources = self.auto_refresh_check.isChecked()
+        except Exception:
+            pass
+
+    def _refresh_auto_status(self) -> None:
+        """Update the status label from the ImportDB."""
+        try:
+            db = ImportDB(self.resource_dir)
+            last_t = db.get_last_import_time()
+            if last_t is None:
+                self.auto_status_label.setText("Status: no imports recorded yet")
+                return
+            dt = _time.strftime("%Y-%m-%d %H:%M", _time.localtime(last_t))
+            errors = db.get_recent_errors(1)
+            if errors:
+                last_err = errors[0]
+                err_path = os.path.basename(last_err.get("path", ""))
+                self.auto_status_label.setText(
+                    f"Last import: {dt} | "
+                    f"Last error: {err_path}: {last_err.get('message', '')}"
+                )
+            else:
+                self.auto_status_label.setText(f"Last import: {dt}")
+        except Exception:
+            pass
+
+    def _browse_watch_folder(self) -> None:
+        """Open a folder picker to set the watch folder."""
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Watch Folder",
+            self.watch_folder_edit.text() or self.resource_dir,
+        )
+        if folder:
+            self.watch_folder_edit.setText(folder)
+            self._save_auto_settings()
+
+    def _scan_now(self) -> None:
+        """Run a one-shot scan of the watch folder immediately."""
+        from . import __init__ as _init_mod
+        folder = self.watch_folder_edit.text().strip()
+        if not folder:
+            folder = os.path.join(self.resource_dir, _init_mod.ABR_BRUSHES_FOLDER)
+
+        if not os.path.isdir(folder):
+            QMessageBox.warning(
+                self, "Folder Not Found",
+                f"The watch folder does not exist:\n{folder}\n\n"
+                "Please create it and place .abr files inside.",
+            )
+            return
+
+        self._save_auto_settings()
+        s = AutoImportSettings(self.resource_dir)
+        options = ImportOptions(auto_refresh=s.auto_refresh_resources)
+        db = ImportDB(self.resource_dir)
+
+        result = scan_and_import(
+            folder, self.resource_dir,
+            recursive=s.watch_recursive,
+            db=db, options=options,
+        )
+        self._refresh_auto_status()
+
+        if result.imported == 0 and result.skipped == 0 and not result.errors:
+            QMessageBox.information(
+                self, "Scan Complete",
+                f"No .abr files found in:\n{folder}",
+            )
+        elif result.imported == 0 and result.skipped > 0 and not result.errors:
+            QMessageBox.information(
+                self, "Scan Complete",
+                f"All {result.skipped} file(s) are already up-to-date — nothing to import.",
+            )
+        else:
+            msg = (
+                f"Imported {result.imported} brush(es) from {folder}.\n"
+                f"Skipped (unchanged): {result.skipped}"
+            )
+            if result.errors:
+                msg += f"\n\nErrors ({len(result.errors)}):\n" + "\n".join(result.errors[:10])
+            QMessageBox.information(self, "Scan Complete", msg)
 
     # ---------- Slots ----------
 
