@@ -21,7 +21,7 @@ from abr_brush_importer.abr_parser import (
     ABRParser, BrushTip, BrushDynamics, BrushPattern, parse_abr,
 )
 from abr_brush_importer.gbr_writer import write_gbr, write_png
-from abr_brush_importer.kpp_writer import write_kpp, _make_preset_xml, _make_thumbnail
+from abr_brush_importer.kpp_writer import write_kpp, _make_preset_xml, _make_thumbnail, _format_sensor_xml
 
 print("All modules import OK")
 
@@ -313,5 +313,107 @@ assert os.path.isfile(kpp_rgba_path)
 print("write_kpp with RGBA: OK")
 
 shutil.rmtree(tmp2)
+
+# ── 19) Test _format_sensor_xml helper ──
+# Default linear curve
+sensor = _format_sensor_xml([])
+assert '&lt;sensors&gt;' in sensor, "sensor XML not escaped"
+assert 'id=&quot;pressure&quot;' in sensor, "pressure id missing"
+assert '0.0000,0.0000' in sensor, "start point missing in default curve"
+assert '1.0000,1.0000' in sensor, "end point missing in default curve"
+print("_format_sensor_xml (default linear): OK")
+
+# Custom curve — verify start, mid and end points are all present
+sensor2 = _format_sensor_xml([(0.0, 0.0), (0.5, 0.25), (1.0, 1.0)])
+assert '0.0000,0.0000' in sensor2, "start point missing in custom curve"
+assert '0.5000,0.2500' in sensor2, "mid-point missing in custom curve"
+assert '1.0000,1.0000' in sensor2, "end point missing in custom curve"
+print("_format_sensor_xml (custom curve): OK")
+
+# ── 20) Test write_kpp enables pressure sensitivity by default ──
+tmp3 = tempfile.mkdtemp()
+pressure_tip = BrushTip()
+pressure_tip.name = "Pressure Test"
+pressure_tip.width = 32
+pressure_tip.height = 32
+pressure_tip.spacing = 25
+pressure_tip.channels = 1
+pressure_tip.image_data = ABRParser._generate_computed_image(32, 100, 0, 80)
+
+kpp_pressure_path = os.path.join(tmp3, "test_pressure.kpp")
+write_kpp(kpp_pressure_path, pressure_tip, use_pressure=True)
+with zipfile.ZipFile(kpp_pressure_path, 'r') as zf:
+    xml_content = zf.read("preset.xml").decode("utf-8")
+    assert 'name="size/useCurve"' in xml_content, \
+        "size/useCurve missing when use_pressure=True"
+    assert '>true<' in xml_content or 'type="bool">true' in xml_content, \
+        "useCurve not set to true when use_pressure=True"
+    assert 'name="size/sensor"' in xml_content, \
+        "size/sensor missing when use_pressure=True"
+    assert 'id=&quot;pressure&quot;' in xml_content, \
+        "pressure sensor id missing"
+print("write_kpp pressure sensitivity (default on): OK")
+
+# ── 21) Test write_kpp disables pressure sensitivity when use_pressure=False ──
+kpp_nopress_path = os.path.join(tmp3, "test_nopress.kpp")
+write_kpp(kpp_nopress_path, pressure_tip, use_pressure=False)
+with zipfile.ZipFile(kpp_nopress_path, 'r') as zf:
+    xml_content = zf.read("preset.xml").decode("utf-8")
+    assert 'name="size/useCurve"' not in xml_content, \
+        "size/useCurve should be absent when use_pressure=False"
+print("write_kpp pressure sensitivity (disabled): OK")
+
+# ── 22) Test write_kpp preserves ABR pressure curves ──
+curve_tip = BrushTip()
+curve_tip.name = "Curve Brush"
+curve_tip.width = 16
+curve_tip.height = 16
+curve_tip.spacing = 25
+curve_tip.channels = 1
+curve_tip.image_data = bytes([200] * 256)
+curve_tip.dynamics = BrushDynamics(
+    spacing=25, opacity=100, flow=100,
+    size_pressure_curve=[(0.0, 0.0), (0.5, 0.3), (1.0, 1.0)],
+    opacity_pressure_curve=[(0.0, 0.0), (1.0, 1.0)],
+    flow_pressure_curve=[(0.0, 0.0), (0.5, 0.5), (1.0, 1.0)],
+)
+
+kpp_curve_path = os.path.join(tmp3, "test_curve.kpp")
+write_kpp(kpp_curve_path, curve_tip, use_pressure=True)
+with zipfile.ZipFile(kpp_curve_path, 'r') as zf:
+    xml_content = zf.read("preset.xml").decode("utf-8")
+    # Size pressure curve with custom mid-point
+    assert '0.5000,0.3000' in xml_content, \
+        "custom size pressure curve mid-point not found"
+    # Opacity pressure sensor
+    assert 'name="Opacity/useCurve" type="bool">true</param>' in xml_content, \
+        "Opacity/useCurve missing for opacity pressure curve"
+    assert 'name="Opacity/sensor"' in xml_content, \
+        "Opacity/sensor missing"
+    # Flow pressure sensor with explicit points
+    assert 'name="flow/useCurve" type="bool">true</param>' in xml_content, \
+        "flow/useCurve missing for non-empty flow pressure curve"
+print("write_kpp with ABR pressure curves: OK")
+
+# ── 23) Test roundness_jitter is emitted in preset.xml ──
+rj_tip = BrushTip()
+rj_tip.name = "RJ Brush"
+rj_tip.width = 16
+rj_tip.height = 16
+rj_tip.spacing = 25
+rj_tip.channels = 1
+rj_tip.image_data = bytes([200] * 256)
+rj_tip.dynamics = BrushDynamics(spacing=25, roundness_jitter=60)
+
+kpp_rj_path = os.path.join(tmp3, "test_rj.kpp")
+write_kpp(kpp_rj_path, rj_tip)
+with zipfile.ZipFile(kpp_rj_path, 'r') as zf:
+    xml_content = zf.read("preset.xml").decode("utf-8")
+    # roundness_jitter: 60% → 0.6000
+    assert '<param name="RoundnessJitter/value" type="float">0.6000</param>' in xml_content, \
+        "RoundnessJitter not found in preset.xml"
+print("write_kpp RoundnessJitter: OK")
+
+shutil.rmtree(tmp3)
 
 print("\nAll tests passed!")
