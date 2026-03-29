@@ -416,4 +416,110 @@ print("write_kpp RoundnessJitter: OK")
 
 shutil.rmtree(tmp3)
 
+# ══════════════════════════════════════════════════════════════════════
+#  net_utils tests (no real network access required)
+# ══════════════════════════════════════════════════════════════════════
+from abr_brush_importer.net_utils import (
+    url_cache_key, get_cache_dir, cached_path,
+    list_cached_files, clear_cache, extract_abr_from_zip, _is_zip,
+    CACHE_FOLDER_NAME,
+)
+
+# ── N1) url_cache_key is stable and filesystem-safe ──
+key1 = url_cache_key("https://example.com/brushes.abr")
+key2 = url_cache_key("https://example.com/brushes.abr")
+assert key1 == key2, "cache key is not stable"
+assert len(key1) == 16, f"expected 16-char key, got {len(key1)}"
+assert all(c in "0123456789abcdef" for c in key1), "key contains non-hex chars"
+# Different URLs → different keys
+key3 = url_cache_key("https://example.com/other.abr")
+assert key1 != key3, "different URLs should produce different keys"
+print("url_cache_key: OK")
+
+# ── N2) get_cache_dir creates the directory ──
+tmp_net = tempfile.mkdtemp()
+cache_dir = get_cache_dir(tmp_net)
+assert os.path.isdir(cache_dir), "cache dir was not created"
+assert cache_dir.endswith(CACHE_FOLDER_NAME), "cache dir name mismatch"
+print("get_cache_dir: OK")
+
+# ── N3) cached_path returns a deterministic path inside cache_dir ──
+path_a = cached_path(tmp_net, "https://example.com/a.abr", "a.abr")
+path_b = cached_path(tmp_net, "https://example.com/a.abr", "a.abr")
+assert path_a == path_b, "cached_path is not stable"
+assert path_a.startswith(cache_dir), "cached_path is outside cache_dir"
+print("cached_path: OK")
+
+# ── N4) list_cached_files and clear_cache ──
+# Write a couple of dummy files into the cache dir
+dummy1 = os.path.join(cache_dir, "dummy1.abr")
+dummy2 = os.path.join(cache_dir, "dummy2.abr")
+with open(dummy1, "wb"):
+    pass
+with open(dummy2, "wb"):
+    pass
+files = list_cached_files(tmp_net)
+assert len(files) == 2, f"expected 2 cached files, got {len(files)}"
+deleted = clear_cache(tmp_net)
+assert deleted == 2, f"expected 2 deletions, got {deleted}"
+assert list_cached_files(tmp_net) == [], "cache not empty after clear"
+print("list_cached_files / clear_cache: OK")
+
+# ── N5) extract_abr_from_zip: happy path ──
+# Build a minimal zip containing one .abr file
+import zipfile as _zf
+zip_path = os.path.join(tmp_net, "test.zip")
+fake_abr_content = b"fake abr content"
+with _zf.ZipFile(zip_path, "w") as zf:
+    zf.writestr("brushes/my_brush.abr", fake_abr_content)
+    zf.writestr("readme.txt", b"ignore me")   # non-abr should be skipped
+
+extract_dir = os.path.join(tmp_net, "extracted")
+results = extract_abr_from_zip(zip_path, extract_dir)
+assert len(results) == 1, f"expected 1 extracted abr, got {len(results)}"
+assert results[0].endswith("my_brush.abr"), f"unexpected path: {results[0]}"
+with open(results[0], "rb") as f:
+    assert f.read() == fake_abr_content, "extracted content mismatch"
+print("extract_abr_from_zip (happy path): OK")
+
+# ── N6) extract_abr_from_zip: zip-slip prevention ──
+zip_slip = os.path.join(tmp_net, "slip.zip")
+with _zf.ZipFile(zip_slip, "w") as zf:
+    # A malicious entry that tries to escape extract_dir via ../
+    zf.writestr("../../evil.abr", b"evil")
+    zf.writestr("safe.abr", b"safe")
+
+slip_dir = os.path.join(tmp_net, "slip_out")
+results2 = extract_abr_from_zip(zip_slip, slip_dir)
+# Only "safe.abr" should be extracted; "../../evil.abr" has basename "evil.abr"
+# which would land inside slip_dir and is therefore allowed.
+# The important thing: no file should escape slip_dir.
+for p in results2:
+    real_p = os.path.realpath(p)
+    real_d = os.path.realpath(slip_dir)
+    assert real_p.startswith(real_d), f"zip-slip: file escaped to {p}"
+print("extract_abr_from_zip (zip-slip guard): OK")
+
+# ── N7) extract_abr_from_zip: no abr files raises ValueError ──
+empty_zip = os.path.join(tmp_net, "empty.zip")
+with _zf.ZipFile(empty_zip, "w") as zf:
+    zf.writestr("readme.txt", b"no brushes here")
+try:
+    extract_abr_from_zip(empty_zip, os.path.join(tmp_net, "no_abr"))
+    assert False, "expected ValueError for empty zip"
+except ValueError as e:
+    assert "no .abr" in str(e).lower(), f"unexpected error message: {e}"
+print("extract_abr_from_zip (no abr raises ValueError): OK")
+
+# ── N8) _is_zip detects zip magic bytes ──
+assert _is_zip(zip_path), "zip not detected"
+# A non-zip file
+non_zip = os.path.join(tmp_net, "not_a.zip")
+with open(non_zip, "wb") as f:
+    f.write(b"\x00\x01\x02\x03")
+assert not _is_zip(non_zip), "non-zip falsely detected as zip"
+print("_is_zip: OK")
+
+shutil.rmtree(tmp_net)
+
 print("\nAll tests passed!")
