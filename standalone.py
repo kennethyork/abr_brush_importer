@@ -44,12 +44,12 @@ def main() -> None:
     print(f"Parsing: {abr_path}")
 
     try:
-        brushes = parse_abr(abr_path)
+        brushes, patterns = parse_abr(abr_path)
     except Exception as exc:
         print(f"Error parsing ABR file: {exc}")
         sys.exit(1)
 
-    print(f"Found {len(brushes)} brush(es)")
+    print(f"Found {len(brushes)} brush(es), {len(patterns)} pattern(s)")
 
     if not brushes:
         print("No brushes were extracted. The file may use an unsupported variant.")
@@ -66,8 +66,10 @@ def main() -> None:
         gbr_path = os.path.join(output_dir, f"{safe}.gbr")
         png_path = os.path.join(output_dir, f"{safe}.png")
 
-        write_gbr(gbr_path, name, tip.width, tip.height, tip.image_data, tip.spacing)
-        write_png(png_path, tip.width, tip.height, tip.image_data)
+        from abr_brush_importer.abr_parser import ABRParser
+        gray_data = ABRParser.get_grayscale(tip) if tip.channels > 1 else tip.image_data
+        write_gbr(gbr_path, name, tip.width, tip.height, gray_data, tip.spacing)
+        write_png(png_path, tip.width, tip.height, tip.image_data, channels=tip.channels)
 
         print(f"  [{i + 1}/{len(brushes)}] {name} ({tip.width}×{tip.height})")
 

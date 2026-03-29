@@ -19,7 +19,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QImage, QPixmap, QIcon
 
-from .abr_parser import ABRParser, BrushTip
+from .abr_parser import ABRParser, BrushTip, BrushPattern
 from .gbr_writer import write_gbr, write_png
 
 
@@ -30,16 +30,56 @@ from .gbr_writer import write_gbr, write_png
 def _tip_to_qimage(tip: BrushTip) -> QImage:
     """Convert a BrushTip to a QImage for display.
 
-    ABR convention: 0 = transparent, 255 = opaque.
-    We invert for display so the brush shape appears dark on a white background.
+    Handles grayscale (1ch), RGB (3ch), and RGBA (4ch) brush tips.
+    For grayscale: inverts so brush shape is dark on white.
+    For RGBA: composites over white background.
     """
-    size = tip.width * tip.height
-    if tip.width <= 0 or tip.height <= 0 or len(tip.image_data) < size:
+    if tip.width <= 0 or tip.height <= 0:
         return QImage()
 
-    inverted = bytes(255 - b for b in tip.image_data[:size])
-    img = QImage(inverted, tip.width, tip.height, tip.width, QImage.Format_Grayscale8)
-    return img.copy()  # copy so the QImage owns its buffer
+    pixel_count = tip.width * tip.height
+
+    if tip.channels == 4:
+        expected = pixel_count * 4
+        if len(tip.image_data) < expected:
+            return QImage()
+        # Composite RGBA over white for preview
+        data = tip.image_data
+        rgb_buf = bytearray(pixel_count * 4)  # RGBA for QImage
+        for px in range(pixel_count):
+            base = px * 4
+            r, g, b, a = data[base], data[base+1], data[base+2], data[base+3]
+            af = a / 255.0
+            rgb_buf[px*4]   = int(r * af + 255 * (1 - af))
+            rgb_buf[px*4+1] = int(g * af + 255 * (1 - af))
+            rgb_buf[px*4+2] = int(b * af + 255 * (1 - af))
+            rgb_buf[px*4+3] = 255
+        img = QImage(bytes(rgb_buf), tip.width, tip.height,
+                     tip.width * 4, QImage.Format_RGBA8888)
+        return img.copy()
+    elif tip.channels == 3:
+        expected = pixel_count * 3
+        if len(tip.image_data) < expected:
+            return QImage()
+        # Pad RGB to RGBA with full alpha for QImage
+        data = tip.image_data
+        rgba_buf = bytearray(pixel_count * 4)
+        for px in range(pixel_count):
+            base = px * 3
+            rgba_buf[px*4]   = data[base]
+            rgba_buf[px*4+1] = data[base+1]
+            rgba_buf[px*4+2] = data[base+2]
+            rgba_buf[px*4+3] = 255
+        img = QImage(bytes(rgba_buf), tip.width, tip.height,
+                     tip.width * 4, QImage.Format_RGBA8888)
+        return img.copy()
+    else:
+        if len(tip.image_data) < pixel_count:
+            return QImage()
+        inverted = bytes(255 - b for b in tip.image_data[:pixel_count])
+        img = QImage(inverted, tip.width, tip.height, tip.width,
+                     QImage.Format_Grayscale8)
+        return img.copy()
 
 
 def _tip_to_icon(tip: BrushTip, icon_size: int = 48) -> QIcon:
@@ -94,6 +134,7 @@ class ABRImporterDialog(QDialog):
         super().__init__(parent)
         self.resource_dir = resource_dir
         self.brushes: list = []
+        self.patterns: list = []
 
         self.setWindowTitle("ABR Brush Importer")
         self.setMinimumSize(750, 550)
@@ -197,11 +238,13 @@ class ABRImporterDialog(QDialog):
         self.file_label.setText(filepath)
         self.brush_list.clear()
         self.brushes = []
+        self.patterns = []
         self.preview.setText("Parsing…")
 
         try:
             parser = ABRParser(filepath=filepath)
             self.brushes = parser.parse()
+            self.patterns = parser.patterns
         except Exception as exc:
             QMessageBox.critical(
                 self, "Parse Error", f"Failed to parse ABR file:\n{exc}"
@@ -248,9 +291,11 @@ class ABRImporterDialog(QDialog):
         tip = self.brushes[idx]
         self.preview.show_brush(tip)
 
+        ch_label = {1: 'Grayscale', 3: 'RGB', 4: 'RGBA'}.get(tip.channels, f'{tip.channels}ch')
         lines = [
             f"<b>Name:</b> {tip.name}",
             f"<b>Size:</b> {tip.width} × {tip.height} px",
+            f"<b>Channels:</b> {ch_label}",
             f"<b>Spacing:</b> {tip.spacing}%",
         ]
         if tip.brush_type == 1:
@@ -259,6 +304,27 @@ class ABRImporterDialog(QDialog):
                 f"<b>Roundness:</b> {tip.roundness}%",
                 f"<b>Hardness:</b> {tip.hardness}%",
             ]
+        if tip.dynamics:
+            d = tip.dynamics
+            dyn_parts = []
+            if d.opacity != 100:
+                dyn_parts.append(f"Opacity {d.opacity}%")
+            if d.flow != 100:
+                dyn_parts.append(f"Flow {d.flow}%")
+            if d.size_jitter:
+                dyn_parts.append(f"Size Jitter {d.size_jitter}%")
+            if d.angle_jitter:
+                dyn_parts.append(f"Angle Jitter {d.angle_jitter}°")
+            if d.scatter:
+                dyn_parts.append(f"Scatter {d.scatter}%")
+            if d.wet_edges:
+                dyn_parts.append("Wet Edges")
+            if d.noise:
+                dyn_parts.append("Noise")
+            if d.smoothing:
+                dyn_parts.append("Smoothing")
+            if dyn_parts:
+                lines.append(f"<b>Dynamics:</b> {', '.join(dyn_parts)}")
         self.info_label.setText("<br>".join(lines))
 
     # ---------- Import logic ----------
@@ -299,17 +365,25 @@ class ABRImporterDialog(QDialog):
 
             safe_name = _sanitize(tip.name or f"brush_{idx}")
             pixels = tip.image_data
-            if invert:
+            ch = tip.channels
+            if invert and ch == 1:
                 pixels = bytes(255 - b for b in pixels)
 
             try:
                 if save_gbr:
+                    from .abr_parser import ABRParser as _AP
+                    # GBR works best with grayscale; convert RGBA/RGB
+                    gbr_pixels = _AP.get_grayscale(tip) if ch > 1 else pixels
+                    if invert and ch > 1:
+                        gbr_pixels = bytes(255 - b for b in gbr_pixels)
                     path = _unique(os.path.join(brushes_dir, f"{safe_name}.gbr"))
                     write_gbr(path, tip.name or safe_name,
-                              tip.width, tip.height, pixels, tip.spacing)
+                              tip.width, tip.height, gbr_pixels, tip.spacing,
+                              channels=1)
                 if save_png:
                     path = _unique(os.path.join(brushes_dir, f"{safe_name}.png"))
-                    write_png(path, tip.width, tip.height, pixels)
+                    write_png(path, tip.width, tip.height, pixels,
+                              channels=ch)
                 imported += 1
             except Exception as exc:
                 errors.append(f"{tip.name}: {exc}")

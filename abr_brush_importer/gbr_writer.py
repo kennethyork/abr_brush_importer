@@ -2,8 +2,8 @@
 Brush format writers for Krita-compatible brush tips.
 
 Supports:
-  .gbr  — GIMP Brush v2 (grayscale). Krita loads these natively as predefined brush tips.
-  .png  — Standard PNG (grayscale). Also usable as brush tips in Krita.
+  .gbr  — GIMP Brush v2 (grayscale or RGBA). Krita loads these natively.
+  .png  — Standard PNG (grayscale or RGBA). Also usable as brush tips.
 
 The GBR format is preferred because it embeds the brush name and spacing directly.
 """
@@ -14,20 +14,23 @@ import zlib
 
 
 def write_gbr(filepath: str, name: str, width: int, height: int,
-              image_data: bytes, spacing: int = 25) -> None:
+              image_data: bytes, spacing: int = 25,
+              channels: int = 1) -> None:
     """Write a GIMP Brush v2 (.gbr) file.
 
+    channels: 1 = grayscale, 4 = RGBA.
     GBR v2 header layout (all fields big-endian):
       uint32  header_size   (28 + length of name including null terminator)
       uint32  version       (2)
       uint32  width
       uint32  height
-      uint32  bytes_per_pixel  (1 = grayscale)
+      uint32  bytes_per_pixel  (1 = grayscale, 4 = RGBA)
       char[4] magic         ("GIMP")
       uint32  spacing       (percentage, 1–1000)
       char[]  name          (null-terminated UTF-8)
-    Followed by raw pixel data (width × height bytes, grayscale).
+    Followed by raw pixel data.
     """
+    bpp = channels if channels in (1, 3, 4) else 1
     name_bytes = name.encode('utf-8') + b'\x00'
     header_size = 28 + len(name_bytes)
 
@@ -37,7 +40,7 @@ def write_gbr(filepath: str, name: str, width: int, height: int,
         2,                              # version
         width,
         height,
-        1,                              # bytes per pixel (grayscale)
+        bpp,                            # bytes per pixel
         b'GIMP',                        # magic
         max(1, min(spacing, 1000)),     # spacing
     )
@@ -47,12 +50,12 @@ def write_gbr(filepath: str, name: str, width: int, height: int,
     with open(filepath, 'wb') as f:
         f.write(header)
         f.write(name_bytes)
-        f.write(image_data[:width * height])
+        f.write(image_data[:width * height * bpp])
 
 
 def write_png(filepath: str, width: int, height: int,
-              image_data: bytes) -> None:
-    """Write a grayscale PNG file using only the standard library (no Pillow)."""
+              image_data: bytes, channels: int = 1) -> None:
+    """Write a PNG file (grayscale or RGBA) using only the standard library."""
     _ensure_dir(filepath)
 
     def _chunk(chunk_type: bytes, data: bytes) -> bytes:
@@ -62,15 +65,22 @@ def write_png(filepath: str, width: int, height: int,
 
     signature = b'\x89PNG\r\n\x1a\n'
 
-    # IHDR: width, height, bit depth 8, colour type 0 (grayscale)
-    ihdr_data = struct.pack('>IIBBBBB', width, height, 8, 0, 0, 0, 0)
+    # colour type: 0 = grayscale, 2 = RGB, 6 = RGBA
+    if channels == 4:
+        colour_type = 6
+    elif channels == 3:
+        colour_type = 2
+    else:
+        colour_type = 0
 
-    # IDAT: each scanline is prefixed with a filter byte (0 = None)
+    ihdr_data = struct.pack('>IIBBBBB', width, height, 8, colour_type, 0, 0, 0)
+
+    row_bytes = width * channels
     raw_rows = bytearray()
     for y in range(height):
         raw_rows.append(0)                          # filter: None
-        row_start = y * width
-        raw_rows.extend(image_data[row_start:row_start + width])
+        row_start = y * row_bytes
+        raw_rows.extend(image_data[row_start:row_start + row_bytes])
 
     compressed = zlib.compress(bytes(raw_rows), 9)
 

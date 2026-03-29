@@ -1,21 +1,66 @@
 """
-ABR (Adobe Brush) file format parser.
+ABR (Adobe Brush) file format parser — v2.
 
 Supports ABR versions 1, 2, and 6+ (including v6, v7, v9, v10).
-The ABR format stores Photoshop brush tips as grayscale images with
-optional metadata like spacing, angle, roundness, and hardness.
 
-Format overview:
-  v1/v2: Sequential brush records with type (computed/sampled), dimensions, pixel data.
-  v6+:   8BIM resource blocks. 'samp' blocks contain sampled brush images.
-         May have 'desc' blocks with brush engine descriptors.
+New in v2:
+  - Photoshop descriptor ('desc') parsing for brush dynamics (spacing, opacity,
+    flow, scatter, size jitter, angle, roundness, pressure curves, dual brush).
+  - RGBA brush tips (colour type 2 = RGB, type 6 = RGBA) in addition to grayscale.
+  - Pattern/texture extraction from 'patt' 8BIM blocks.
+  - Hardened error recovery: every block parse is wrapped with boundary checks,
+    bad-data guards, and graceful fallback strategies.
 """
 
 import struct
 import io
 import math
+import logging
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List, Optional, Dict, Any, Tuple
+
+log = logging.getLogger("abr_parser")
+
+
+# ===================================================================== #
+#  Data classes                                                          #
+# ===================================================================== #
+
+@dataclass
+class BrushDynamics:
+    """Photoshop brush engine dynamics extracted from a descriptor block."""
+    spacing: int = 25
+    opacity: int = 100
+    flow: int = 100
+    size_jitter: int = 0
+    angle_jitter: int = 0
+    roundness_jitter: int = 0
+    scatter: int = 0
+    count: int = 1
+    hardness: int = 100
+    angle: int = 0
+    roundness: int = 100
+    flip_x: bool = False
+    flip_y: bool = False
+    size_pressure_curve: List[Tuple[float, float]] = field(default_factory=list)
+    opacity_pressure_curve: List[Tuple[float, float]] = field(default_factory=list)
+    flow_pressure_curve: List[Tuple[float, float]] = field(default_factory=list)
+    dual_brush_enabled: bool = False
+    dual_brush_tip_index: int = -1
+    wet_edges: bool = False
+    noise: bool = False
+    smoothing: bool = False
+
+
+@dataclass
+class BrushPattern:
+    """A pattern/texture extracted from a 'patt' block."""
+    name: str = ""
+    pattern_id: str = ""
+    width: int = 0
+    height: int = 0
+    channels: int = 1
+    image_data: bytes = b""
 
 
 @dataclass
@@ -24,31 +69,26 @@ class BrushTip:
     name: str = ""
     width: int = 0
     height: int = 0
-    depth: int = 8          # bits per channel
-    image_data: bytes = b"" # raw grayscale pixel data (1 byte per pixel, 8-bit)
-    spacing: int = 25       # percentage (1-1000)
+    depth: int = 8
+    channels: int = 1       # 1=grayscale, 3=RGB, 4=RGBA
+    image_data: bytes = b""
+    spacing: int = 25
     diameter: int = 0
     angle: int = 0
     roundness: int = 100
     hardness: int = 100
     brush_type: int = 2     # 1=computed, 2=sampled
+    dynamics: Optional[BrushDynamics] = None
 
 
 class ABRParser:
-    """Parser for Adobe Brush (.abr) files.
-
-    Usage:
-        parser = ABRParser(filepath="brushes.abr")
-        tips = parser.parse()
-        for tip in tips:
-            print(tip.name, tip.width, tip.height)
-    """
+    """Parser for Adobe Brush (.abr) files."""
 
     def __init__(self, filepath: str = None, data: bytes = None):
         if filepath:
             with open(filepath, 'rb') as f:
                 self._data = f.read()
-        elif data:
+        elif data is not None:
             self._data = data
         else:
             raise ValueError("Either filepath or data must be provided")
@@ -56,29 +96,47 @@ class ABRParser:
         self._stream = io.BytesIO(self._data)
         self.version = 0
         self.subversion = 0
+        self.patterns: List[BrushPattern] = []
+        self._descriptors: List[BrushDynamics] = []
 
     def parse(self) -> List[BrushTip]:
         """Parse the ABR data and return a list of BrushTip objects."""
         self._stream.seek(0)
-        self.version = self._read_uint16()
+        self.patterns = []
+        self._descriptors = []
+
+        try:
+            self.version = self._read_uint16()
+        except (EOFError, struct.error):
+            log.warning("File too short to contain ABR header")
+            return []
 
         if self.version in (1, 2):
             return self._parse_v1_v2()
         elif self.version >= 6:
-            self.subversion = self._read_uint16()
+            try:
+                self.subversion = self._read_uint16()
+            except (EOFError, struct.error):
+                log.warning("File too short for v6+ subversion")
+                return []
             return self._parse_v6_plus()
         else:
-            raise ValueError(f"Unsupported ABR version: {self.version}")
+            log.warning("Unsupported ABR version: %d", self.version)
+            return []
 
-    # ------------------------------------------------------------------ #
-    #  Binary reading helpers                                              #
-    # ------------------------------------------------------------------ #
+    # ================================================================= #
+    #  Binary reading helpers                                             #
+    # ================================================================= #
 
     def _read(self, n: int) -> bytes:
         data = self._stream.read(n)
         if len(data) < n:
             raise EOFError(f"Expected {n} bytes, got {len(data)}")
         return data
+
+    def _try_read(self, n: int) -> Optional[bytes]:
+        data = self._stream.read(n)
+        return data if len(data) == n else None
 
     def _read_uint8(self) -> int:
         return struct.unpack('>B', self._read(1))[0]
@@ -92,9 +150,32 @@ class ABRParser:
     def _read_uint32(self) -> int:
         return struct.unpack('>I', self._read(4))[0]
 
+    def _read_int32(self) -> int:
+        return struct.unpack('>i', self._read(4))[0]
+
+    def _read_float64(self) -> float:
+        return struct.unpack('>d', self._read(8))[0]
+
     def _read_utf16_string(self, char_count: int) -> str:
+        if char_count <= 0:
+            return ""
         raw = self._read(char_count * 2)
         return raw.decode('utf-16-be', errors='replace').rstrip('\x00')
+
+    def _read_pascal_string(self) -> str:
+        length = self._read_uint8()
+        if length == 0:
+            return ""
+        raw = self._read(length)
+        return raw.decode('latin-1', errors='replace')
+
+    def _read_unicode_string(self) -> str:
+        char_count = self._read_uint32()
+        if char_count == 0:
+            return ""
+        if char_count > 100000:
+            raise ValueError(f"Unreasonable unicode string length: {char_count}")
+        return self._read_utf16_string(char_count)
 
     def _tell(self) -> int:
         return self._stream.tell()
@@ -109,76 +190,407 @@ class ABRParser:
         self._stream.seek(pos)
         return end - pos
 
-    # ------------------------------------------------------------------ #
-    #  PackBits / RLE decompression                                        #
-    # ------------------------------------------------------------------ #
+    # ================================================================= #
+    #  PackBits / RLE decompression                                       #
+    # ================================================================= #
 
     @staticmethod
     def _decode_packbits(data: bytes, expected_size: int) -> bytes:
-        """Decode PackBits (Macintosh RLE) compressed data.
-
-        Encoding rules:
-          n in [0, 127]   -> copy next (n+1) bytes literally
-          n in [-127, -1] -> repeat next byte (1-n) times
-          n == -128        -> no-op
-        """
         result = bytearray()
         i = 0
-        while i < len(data) and len(result) < expected_size:
+        size = len(data)
+        while i < size and len(result) < expected_size:
             n = data[i]
             if n > 127:
-                n -= 256  # unsigned -> signed
+                n -= 256
             i += 1
             if 0 <= n <= 127:
                 count = n + 1
-                end = min(i + count, len(data))
+                end = min(i + count, size)
                 result.extend(data[i:end])
                 i = end
             elif -127 <= n <= -1:
                 count = 1 - n
-                if i < len(data):
+                if i < size:
                     result.extend(bytes([data[i]]) * count)
                     i += 1
-            # n == -128: no-op
         return bytes(result[:expected_size])
 
-    def _read_rle_image(self, width: int, height: int) -> bytes:
-        """Read an RLE-compressed image (scanline-based, uint16 row lengths)."""
+    def _read_rle_image(self, row_bytes: int, height: int) -> bytes:
         scanline_sizes = []
         for _ in range(height):
             scanline_sizes.append(self._read_uint16())
 
         result = bytearray()
-        for size in scanline_sizes:
-            compressed = self._read(size)
-            row = self._decode_packbits(compressed, width)
+        for sl_size in scanline_sizes:
+            compressed = self._read(sl_size)
+            row = self._decode_packbits(compressed, row_bytes)
             result.extend(row)
-            if len(row) < width:
-                result.extend(b'\x00' * (width - len(row)))
+            if len(row) < row_bytes:
+                result.extend(b'\x00' * (row_bytes - len(row)))
 
         return bytes(result)
 
-    # ------------------------------------------------------------------ #
-    #  v1 / v2 parsing                                                     #
-    # ------------------------------------------------------------------ #
+    # ================================================================= #
+    #  Photoshop Descriptor parser (for 'desc' blocks)                    #
+    # ================================================================= #
+
+    def _read_descriptor_key(self) -> str:
+        length = self._read_uint32()
+        if length == 0:
+            length = 4
+        if length > 1000:
+            raise ValueError(f"Unreasonable key length: {length}")
+        return self._read(length).decode('ascii', errors='replace')
+
+    def _parse_descriptor(self) -> Dict[str, Any]:
+        """Parse a Photoshop Descriptor structure (recursive key-value store)."""
+        _class_name = self._read_unicode_string()
+        _class_id = self._read_descriptor_key()
+
+        count = self._read_uint32()
+        if count > 10000:
+            raise ValueError(f"Unreasonable descriptor item count: {count}")
+
+        result: Dict[str, Any] = {}
+
+        for _ in range(count):
+            try:
+                key = self._read_descriptor_key()
+                value = self._parse_descriptor_item()
+                result[key] = value
+            except (EOFError, struct.error, UnicodeDecodeError, ValueError):
+                break
+
+        return result
+
+    def _parse_descriptor_item(self) -> Any:
+        os_type = self._read(4).decode('ascii', errors='replace')
+
+        if os_type == 'bool':
+            return self._read_uint8() != 0
+        elif os_type == 'long':
+            return self._read_int32()
+        elif os_type == 'doub':
+            return self._read_float64()
+        elif os_type == 'UntF':
+            _units = self._read(4).decode('ascii', errors='replace')
+            value = self._read_float64()
+            return {'units': _units, 'value': value}
+        elif os_type == 'enum':
+            _type_id = self._read_descriptor_key()
+            val_id = self._read_descriptor_key()
+            return {'type': _type_id, 'value': val_id}
+        elif os_type == 'TEXT':
+            return self._read_unicode_string()
+        elif os_type == 'tdta':
+            length = self._read_uint32()
+            if length > 10_000_000:
+                raise ValueError(f"Unreasonable tdta length: {length}")
+            return self._read(length)
+        elif os_type in ('Objc', 'GlbO', 'GlbC'):
+            return self._parse_descriptor()
+        elif os_type == 'VlLs':
+            count = self._read_uint32()
+            if count > 100000:
+                raise ValueError(f"Unreasonable list length: {count}")
+            items = []
+            for _ in range(count):
+                try:
+                    items.append(self._parse_descriptor_item())
+                except (EOFError, struct.error):
+                    break
+            return items
+        elif os_type == 'obj ':
+            return self._parse_descriptor()
+        elif os_type == 'type' or os_type == 'GlbC':
+            return self._read_descriptor_key()
+        else:
+            log.debug("Unknown descriptor type: %s", os_type)
+            return None
+
+    def _descriptor_to_dynamics(self, desc: Dict[str, Any]) -> BrushDynamics:
+        """Map a Photoshop brush descriptor dict to BrushDynamics."""
+        dyn = BrushDynamics()
+
+        val = self._desc_get_num(desc, 'Spcn')
+        if val is not None:
+            dyn.spacing = max(1, min(1000, int(val)))
+
+        val = self._desc_get_num(desc, 'Hrdn')
+        if val is not None:
+            dyn.hardness = max(0, min(100, int(val)))
+
+        val = self._desc_get_num(desc, 'Angl')
+        if val is not None:
+            dyn.angle = int(val) % 360
+
+        val = self._desc_get_num(desc, 'Rndn')
+        if val is not None:
+            dyn.roundness = max(0, min(100, int(val)))
+
+        dyn.flip_x = bool(desc.get('flipX', False))
+        dyn.flip_y = bool(desc.get('flipY', False))
+
+        # Transfer (opacity / flow)
+        transfer = desc.get('Trns', {})
+        if isinstance(transfer, dict):
+            val = self._desc_get_num(transfer, 'Opct')
+            if val is not None:
+                dyn.opacity = max(0, min(100, int(val)))
+            val = self._desc_get_num(transfer, 'Flw ')
+            if val is not None:
+                dyn.flow = max(0, min(100, int(val)))
+            dyn.opacity_pressure_curve = self._extract_curve(transfer, 'opVr')
+            dyn.flow_pressure_curve = self._extract_curve(transfer, 'flVr')
+
+        # Shape dynamics
+        shape_dyn = desc.get('ShpD', {})
+        if isinstance(shape_dyn, dict):
+            val = self._desc_get_num(shape_dyn, 'SzJt')
+            if val is not None:
+                dyn.size_jitter = max(0, min(100, int(val)))
+            val = self._desc_get_num(shape_dyn, 'AnJt')
+            if val is not None:
+                dyn.angle_jitter = max(0, min(360, int(val)))
+            val = self._desc_get_num(shape_dyn, 'RnJt')
+            if val is not None:
+                dyn.roundness_jitter = max(0, min(100, int(val)))
+            dyn.size_pressure_curve = self._extract_curve(shape_dyn, 'szVr')
+
+        # Scattering
+        scatter_desc = desc.get('Sctr', {})
+        if isinstance(scatter_desc, dict):
+            val = self._desc_get_num(scatter_desc, 'Sctr')
+            if val is not None:
+                dyn.scatter = max(0, min(1000, int(val)))
+            cnt = scatter_desc.get('Cnt ', 1)
+            if isinstance(cnt, int):
+                dyn.count = max(1, min(16, cnt))
+
+        # Dual brush
+        dual = desc.get('DlBr', {})
+        if isinstance(dual, dict) and dual:
+            dyn.dual_brush_enabled = True
+
+        # Toggles
+        dyn.wet_edges = bool(desc.get('Wtdg', False))
+        dyn.noise = bool(desc.get('Nose', False))
+        dyn.smoothing = bool(desc.get('Smth', False))
+
+        return dyn
+
+    @staticmethod
+    def _desc_get_num(desc: Dict[str, Any], key: str) -> Optional[float]:
+        val = desc.get(key)
+        if val is None:
+            return None
+        if isinstance(val, dict) and 'value' in val:
+            return float(val['value'])
+        if isinstance(val, (int, float)):
+            return float(val)
+        return None
+
+    @staticmethod
+    def _extract_curve(desc: Dict[str, Any], key: str) -> List[Tuple[float, float]]:
+        var = desc.get(key)
+        if not isinstance(var, dict):
+            return []
+
+        curve_data = var.get('Crv ', [])
+        if not isinstance(curve_data, list):
+            return []
+
+        points = []
+        for pt in curve_data:
+            if isinstance(pt, dict):
+                inp = pt.get('Hrzn', pt.get('input', 0))
+                out = pt.get('Vrtc', pt.get('output', 0))
+                if isinstance(inp, dict):
+                    inp = inp.get('value', 0)
+                if isinstance(out, dict):
+                    out = out.get('value', 0)
+                inp_f = float(inp) / 255.0 if float(inp) > 1.0 else float(inp)
+                out_f = float(out) / 255.0 if float(out) > 1.0 else float(out)
+                points.append((
+                    max(0.0, min(1.0, inp_f)),
+                    max(0.0, min(1.0, out_f)),
+                ))
+        return points
+
+    # ================================================================= #
+    #  Pattern ('patt') block parser                                      #
+    # ================================================================= #
+
+    def _parse_patt_block(self, block_length: int) -> None:
+        block_end = self._tell() + block_length
+
+        while self._tell() < block_end - 8:
+            pat_start = self._tell()
+            try:
+                pat = self._parse_single_pattern(block_end)
+                if pat and pat.width > 0 and pat.height > 0:
+                    self.patterns.append(pat)
+            except (EOFError, struct.error, ValueError) as exc:
+                log.debug("Pattern parse error at offset %d: %s", pat_start, exc)
+                break
+
+            # Pad to 4-byte boundary
+            pos = self._tell()
+            pad = (4 - (pos % 4)) % 4
+            if pad and self._remaining() >= pad:
+                self._read(pad)
+
+    def _parse_single_pattern(self, block_end: int) -> Optional[BrushPattern]:
+        if self._tell() >= block_end - 4:
+            return None
+
+        version = self._read_uint32()
+        if version != 1:
+            return None
+
+        image_mode = self._read_uint32()
+        height = self._read_uint16()
+        width = self._read_uint16()
+
+        if width <= 0 or height <= 0 or width > 16384 or height > 16384:
+            return None
+
+        name = self._read_unicode_string()
+        unique_id = self._read_pascal_string()
+        # Pad pascal string to even
+        if (len(unique_id) + 1) % 2 != 0:
+            self._read(1)
+
+        if image_mode == 1:
+            num_channels = 1
+        elif image_mode == 3:
+            num_channels = 3
+        elif image_mode == 9:
+            num_channels = 3
+        elif image_mode == 2:
+            num_channels = 1
+            # Indexed colour mode: skip colour table
+            self._read(256 * 3)
+            self._read(4)  # transparency count
+        else:
+            return None
+
+        # VirtualMemoryArrayList
+        _vma_version = self._read_uint32()
+        _vma_length = self._read_uint32()
+        vma_end = self._tell() + _vma_length
+
+        if vma_end > block_end:
+            vma_end = block_end
+
+        _top = self._read_uint32()
+        _left = self._read_uint32()
+        _bottom = self._read_uint32()
+        _right = self._read_uint32()
+        _max_channels = self._read_uint32()
+
+        pixel_data_per_channel: Dict[int, bytes] = {}
+        for ch_idx in range(_max_channels + 2):
+            if self._tell() >= vma_end:
+                break
+            try:
+                is_written = self._read_uint32()
+            except EOFError:
+                break
+            if is_written == 0:
+                continue
+            try:
+                ch_length = self._read_uint32()
+            except EOFError:
+                break
+            ch_end = self._tell() + ch_length
+            if ch_length <= 0 or ch_end > vma_end:
+                self._seek(min(ch_end, vma_end))
+                continue
+
+            try:
+                _ch_depth = self._read_uint32()
+                ch_top = self._read_uint32()
+                ch_left = self._read_uint32()
+                ch_bottom = self._read_uint32()
+                ch_right = self._read_uint32()
+                _ch_pixel_depth = self._read_uint16()
+                ch_compression = self._read_uint8()
+
+                ch_w = ch_right - ch_left
+                ch_h = ch_bottom - ch_top
+
+                if 0 < ch_w <= 16384 and 0 < ch_h <= 16384:
+                    if ch_compression == 0:
+                        ch_data = self._read(ch_w * ch_h)
+                    elif ch_compression == 1:
+                        ch_data = self._read_rle_image(ch_w, ch_h)
+                    else:
+                        ch_data = b''
+
+                    if len(ch_data) >= ch_w * ch_h:
+                        pixel_data_per_channel[ch_idx] = ch_data
+            except (EOFError, struct.error):
+                pass
+
+            self._seek(ch_end)
+
+        self._seek(vma_end)
+
+        # Interleave channels
+        if len(pixel_data_per_channel) >= num_channels:
+            pixel_count = width * height
+            interleaved = bytearray(pixel_count * num_channels)
+            for ch in range(num_channels):
+                ch_data = pixel_data_per_channel.get(ch, b'\x00' * pixel_count)
+                for px in range(min(pixel_count, len(ch_data))):
+                    interleaved[px * num_channels + ch] = ch_data[px]
+
+            return BrushPattern(
+                name=name, pattern_id=unique_id,
+                width=width, height=height,
+                channels=num_channels,
+                image_data=bytes(interleaved),
+            )
+
+        return None
+
+    # ================================================================= #
+    #  v1 / v2 parsing                                                    #
+    # ================================================================= #
 
     def _parse_v1_v2(self) -> List[BrushTip]:
-        count = self._read_uint16()
+        try:
+            count = self._read_uint16()
+        except (EOFError, struct.error):
+            return []
+
+        if count > 10000:
+            log.warning("Unreasonable brush count %d, capping at 10000", count)
+            count = 10000
+
         brushes = []
         for i in range(count):
             try:
                 tip = self._parse_v1_v2_brush(i)
                 if tip:
                     brushes.append(tip)
-            except (EOFError, struct.error, ValueError):
-                break
+            except (EOFError, struct.error, ValueError, OverflowError) as exc:
+                log.debug("v1/v2 brush %d parse error: %s", i, exc)
+                if self._remaining() < 6:
+                    break
+                continue
         return brushes
 
     def _parse_v1_v2_brush(self, index: int) -> Optional[BrushTip]:
         brush_type = self._read_uint16()
         block_size = self._read_uint32()
-        block_end = self._tell() + block_size
 
+        if block_size > len(self._data):
+            return None
+
+        block_end = self._tell() + block_size
         tip = BrushTip(brush_type=brush_type)
 
         try:
@@ -189,7 +601,7 @@ class ABRParser:
             else:
                 self._seek(block_end)
                 return None
-        except (EOFError, struct.error):
+        except (EOFError, struct.error, OverflowError):
             self._seek(block_end)
             return None
 
@@ -197,13 +609,12 @@ class ABRParser:
         return tip
 
     def _parse_computed_brush(self, tip: BrushTip, index: int) -> None:
-        """Parse a computed (parametric) brush — circle/ellipse with hardness."""
         _misc = self._read_uint32()
         tip.spacing = self._read_uint16()
 
         if self.version == 2:
             name_len = self._read_uint32()
-            if name_len > 0:
+            if 0 < name_len < 10000:
                 tip.name = self._read_utf16_string(name_len)
 
         tip.diameter = self._read_uint16()
@@ -217,18 +628,18 @@ class ABRParser:
         size = max(tip.diameter, 1)
         tip.width = size
         tip.height = size
+        tip.channels = 1
         tip.image_data = self._generate_computed_image(
             size, tip.roundness, tip.angle, tip.hardness
         )
 
     def _parse_sampled_brush_v12(self, tip: BrushTip, index: int) -> None:
-        """Parse a sampled (bitmap) brush from v1/v2 format."""
         _misc = self._read_uint32()
         tip.spacing = self._read_uint16()
 
         if self.version == 2:
             name_len = self._read_uint32()
-            if name_len > 0:
+            if 0 < name_len < 10000:
                 tip.name = self._read_utf16_string(name_len)
 
         _anti_alias = self._read_uint8()
@@ -262,41 +673,35 @@ class ABRParser:
             tip.image_data = self._convert_16_to_8(tip.image_data)
             tip.depth = 8
 
-        # Clamp to exact size
+        tip.channels = 1
         expected = tip.width * tip.height
         if len(tip.image_data) < expected:
             tip.image_data += b'\x00' * (expected - len(tip.image_data))
         tip.image_data = tip.image_data[:expected]
 
-    # ------------------------------------------------------------------ #
-    #  v6+ parsing                                                         #
-    # ------------------------------------------------------------------ #
+    # ================================================================= #
+    #  v6+ parsing                                                        #
+    # ================================================================= #
 
     def _parse_v6_plus(self) -> List[BrushTip]:
-        """Parse ABR version 6+. Tries 8BIM-block approach and direct-sample fallback."""
+        # First pass: collect desc, patt, samp blocks
+        brushes = self._parse_v6_full_8bim()
+        if brushes:
+            self._assign_dynamics(brushes)
+            return brushes
 
-        # Attempt 1: subversion-based strategy
-        if self.subversion >= 2:
-            brushes = self._parse_v6_with_8bim()
-            if brushes:
-                return brushes
-
-        # Attempt 2: direct samples (subversion 1 or fallback)
+        # Fallback: direct samples
         self._seek(4)
         brushes = self._parse_v6_samples_direct()
         if brushes:
             return brushes
 
-        # Attempt 3: scan for 8BIM from the beginning
+        # Last resort: re-scan
         self._seek(4)
-        brushes = self._parse_v6_with_8bim()
-        if brushes:
-            return brushes
+        brushes = self._parse_v6_full_8bim()
+        return brushes
 
-        return []
-
-    def _parse_v6_with_8bim(self) -> List[BrushTip]:
-        """Scan for 8BIM resource blocks and parse 'samp' sections."""
+    def _parse_v6_full_8bim(self) -> List[BrushTip]:
         brushes = []
 
         while self._remaining() >= 12:
@@ -318,20 +723,47 @@ class ABRParser:
             except EOFError:
                 break
 
+            if block_length > len(self._data):
+                log.debug("8BIM block length %d exceeds file size", block_length)
+                found = self._scan_for_8bim(self._tell())
+                if not found:
+                    break
+                continue
+
             block_start = self._tell()
+            block_end = block_start + block_length
 
-            if block_type == b'samp':
-                samp_brushes = self._parse_samp_block(block_length)
-                brushes.extend(samp_brushes)
+            try:
+                if block_type == b'desc':
+                    desc = self._parse_descriptor()
+                    dyn = self._descriptor_to_dynamics(desc)
+                    self._descriptors.append(dyn)
+                elif block_type == b'patt':
+                    self._parse_patt_block(block_length)
+                elif block_type == b'samp':
+                    samp_brushes = self._parse_samp_block(block_length)
+                    brushes.extend(samp_brushes)
+            except (EOFError, struct.error, ValueError, UnicodeDecodeError) as exc:
+                log.debug("Error in 8BIM %s at %d: %s",
+                          block_type.decode('ascii', errors='replace'), pos, exc)
 
-            self._seek(block_start + block_length)
+            self._seek(block_end)
 
         return brushes
 
+    def _assign_dynamics(self, brushes: List[BrushTip]) -> None:
+        for i, tip in enumerate(brushes):
+            if i < len(self._descriptors):
+                dyn = self._descriptors[i]
+                tip.dynamics = dyn
+                if dyn.spacing > 0:
+                    tip.spacing = dyn.spacing
+
     def _scan_for_8bim(self, start: int) -> bool:
-        """Scan forward (up to 64 KiB) looking for a '8BIM' tag."""
         self._seek(start)
         max_scan = min(65536, self._remaining())
+        if max_scan < 4:
+            return False
         data = self._stream.read(max_scan)
         idx = data.find(b'8BIM')
         if idx >= 0:
@@ -340,24 +772,29 @@ class ABRParser:
         return False
 
     def _parse_v6_samples_direct(self) -> List[BrushTip]:
-        """Parse v6 assuming brush records follow directly (no 8BIM wrapper)."""
         brushes = []
         idx = 0
-        while self._remaining() >= 4:
+        consecutive_failures = 0
+        while self._remaining() >= 4 and consecutive_failures < 10:
             try:
                 brush_length = self._read_uint32()
             except EOFError:
                 break
+
             if brush_length <= 0 or brush_length > self._remaining():
-                break
+                consecutive_failures += 1
+                continue
 
             brush_end = self._tell() + brush_length
             try:
                 tip = self._parse_v6_brush(brush_length, idx)
                 if tip:
                     brushes.append(tip)
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
             except (EOFError, struct.error, ValueError):
-                pass
+                consecutive_failures += 1
 
             idx += 1
             self._seek(brush_end)
@@ -365,18 +802,19 @@ class ABRParser:
         return brushes
 
     def _parse_samp_block(self, block_length: int) -> List[BrushTip]:
-        """Parse the contents of a 'samp' 8BIM block."""
         block_end = self._tell() + block_length
         brushes = []
         idx = 0
+        consecutive_failures = 0
 
-        while self._tell() < block_end - 4:
+        while self._tell() < block_end - 4 and consecutive_failures < 10:
             try:
                 brush_length = self._read_uint32()
             except EOFError:
                 break
 
             if brush_length <= 0 or brush_length > (block_end - self._tell()):
+                consecutive_failures += 1
                 break
 
             brush_end = self._tell() + brush_length
@@ -384,8 +822,12 @@ class ABRParser:
                 tip = self._parse_v6_brush(brush_length, idx)
                 if tip:
                     brushes.append(tip)
-            except (EOFError, struct.error, ValueError):
-                pass
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+            except (EOFError, struct.error, ValueError) as exc:
+                log.debug("samp brush %d error: %s", idx, exc)
+                consecutive_failures += 1
 
             idx += 1
             self._seek(brush_end)
@@ -393,23 +835,24 @@ class ABRParser:
         return brushes
 
     def _parse_v6_brush(self, brush_length: int, index: int) -> Optional[BrushTip]:
-        """Parse a single v6+ brush. Tries multiple layout strategies."""
         brush_start = self._tell()
-        brush_data = self._data[brush_start:brush_start + brush_length]
+        end = min(brush_start + brush_length, len(self._data))
+        brush_data = self._data[brush_start:end]
 
-        # Strategy 1: Simple layout (subversion 1 style)
-        #   [4 unknown] [bounds 4×uint16] [depth uint16] [compress uint8] [data]
-        tip = self._try_parse_v6_simple(brush_data, index)
-        if tip:
-            return tip
+        if len(brush_data) < 15:
+            return None
 
-        # Strategy 2: Named layout (subversion 2 style)
-        #   [4 unknown] [4 name_len] [UTF-16 name] [1 unknown] ... [bounds] [depth] [compress] [data]
+        # Strategy 1: Named layout (most common in v6+)
         tip = self._try_parse_v6_named(brush_data, index)
         if tip:
             return tip
 
-        # Strategy 3: Brute-force scan for a valid bounds pattern
+        # Strategy 2: Simple layout
+        tip = self._try_parse_v6_simple(brush_data, index)
+        if tip:
+            return tip
+
+        # Strategy 3: Brute-force scan
         tip = self._try_parse_v6_scan(brush_data, index)
         if tip:
             return tip
@@ -419,7 +862,6 @@ class ABRParser:
     # ---------- v6 layout strategies ----------
 
     def _try_parse_v6_simple(self, data: bytes, index: int) -> Optional[BrushTip]:
-        """Simple v6 layout: 4 unk + bounds(4×u16) + depth(u16) + compress(u8) + pixels."""
         if len(data) < 15:
             return None
 
@@ -442,27 +884,29 @@ class ABRParser:
         if compression not in (0, 1):
             return None
 
-        image_data = self._extract_image(data[offset:], width, height, depth, compression)
+        channels = self._detect_channels_from_data(data, offset, width, height, depth)
+
+        image_data = self._extract_image(
+            data[offset:], width, height, depth, compression, channels
+        )
         if image_data is None:
             return None
 
         tip = BrushTip(
             name=f"Brush {index + 1}",
             width=width, height=height, depth=depth,
+            channels=channels,
             diameter=max(width, height), brush_type=2,
             image_data=image_data,
         )
-        if depth == 16:
-            tip.image_data = self._convert_16_to_8(tip.image_data)
-            tip.depth = 8
+        self._finalize_tip(tip)
         return tip
 
     def _try_parse_v6_named(self, data: bytes, index: int) -> Optional[BrushTip]:
-        """Named v6 layout with UTF-16 brush name."""
         if len(data) < 20:
             return None
 
-        offset = 4  # skip unknown
+        offset = 4
         name_len = struct.unpack_from('>I', data, offset)[0]
         offset += 4
 
@@ -478,17 +922,14 @@ class ABRParser:
         if offset >= len(data):
             return None
 
-        # Skip 1 unknown byte
-        offset += 1
+        offset += 1  # skip unknown byte
 
-        # Try to extract spacing (2 bytes right after the unknown byte)
         spacing = 25
         if offset + 2 <= len(data):
             raw_spacing = struct.unpack_from('>H', data, offset)[0]
             if 1 <= raw_spacing <= 1000:
                 spacing = raw_spacing
 
-        # Scan for valid bounds from current position
         result = self._find_bounds_in_data(data, offset)
         if result is None:
             return None
@@ -498,27 +939,37 @@ class ABRParser:
         height = bottom - top
 
         if bounds_type == 'short':
-            img_offset = bounds_offset + 8 + 2 + 1   # 4×u16 + depth(u16) + compress(u8)
+            img_offset = bounds_offset + 8 + 2 + 1
         else:
-            img_offset = bounds_offset + 16 + 2 + 1  # 4×u32 + depth(u16) + compress(u8)
+            img_offset = bounds_offset + 16 + 2 + 1
 
-        image_data = self._extract_image(data[img_offset:], width, height, depth, compression)
+        channels = self._detect_channels_from_data(
+            data, img_offset, width, height, depth
+        )
+
+        image_data = self._extract_image(
+            data[img_offset:], width, height, depth, compression, channels
+        )
+        if image_data is None and channels > 1:
+            # Fallback to single channel
+            image_data = self._extract_image(
+                data[img_offset:], width, height, depth, compression, 1
+            )
+            channels = 1
         if image_data is None:
             return None
 
         tip = BrushTip(
             name=name if name else f"Brush {index + 1}",
             width=width, height=height, depth=depth,
+            channels=channels,
             diameter=max(width, height), brush_type=2,
             spacing=spacing, image_data=image_data,
         )
-        if depth == 16:
-            tip.image_data = self._convert_16_to_8(tip.image_data)
-            tip.depth = 8
+        self._finalize_tip(tip)
         return tip
 
     def _try_parse_v6_scan(self, data: bytes, index: int) -> Optional[BrushTip]:
-        """Last resort: scan the entire brush record for a valid bounds pattern."""
         result = self._find_bounds_in_data(data, 4)
         if result is None:
             return None
@@ -532,32 +983,46 @@ class ABRParser:
         else:
             img_offset = bounds_offset + 16 + 2 + 1
 
-        image_data = self._extract_image(data[img_offset:], width, height, depth, compression)
+        image_data = self._extract_image(
+            data[img_offset:], width, height, depth, compression, 1
+        )
         if image_data is None:
             return None
 
         tip = BrushTip(
             name=f"Brush {index + 1}",
             width=width, height=height, depth=depth,
+            channels=1,
             diameter=max(width, height), brush_type=2,
             image_data=image_data,
         )
-        if depth == 16:
-            tip.image_data = self._convert_16_to_8(tip.image_data)
-            tip.depth = 8
+        self._finalize_tip(tip)
         return tip
+
+    def _detect_channels_from_data(self, data: bytes, img_offset: int,
+                                   width: int, height: int, depth: int) -> int:
+        """Heuristic: estimate channel count from available data size."""
+        bpp = max(1, depth // 8)
+        one_ch = width * height * bpp
+        available = len(data) - img_offset
+
+        if one_ch <= 0:
+            return 1
+        if available >= one_ch * 4:
+            return 4
+        if available >= one_ch * 3:
+            return 3
+        return 1
 
     # ---------- Bounds / image extraction helpers ----------
 
     def _find_bounds_in_data(self, data: bytes, start: int) -> Optional[tuple]:
-        """Scan *data* for a valid (top, left, bottom, right, depth, compression) pattern.
-
-        Returns (offset, top, left, bottom, right, depth, compression, 'short'|'long')
-        or None.
-        """
         end_u16 = min(start + 120, len(data) - 11)
-        for offset in range(start, end_u16):
-            top, left, bottom, right = struct.unpack_from('>HHHH', data, offset)
+        for offset in range(start, max(start, end_u16)):
+            try:
+                top, left, bottom, right = struct.unpack_from('>HHHH', data, offset)
+            except struct.error:
+                break
             w, h = right - left, bottom - top
             if 1 <= w <= 16384 and 1 <= h <= 16384 and top <= 16384 and left <= 16384:
                 depth = struct.unpack_from('>H', data, offset + 8)[0]
@@ -570,8 +1035,11 @@ class ABRParser:
                             return (offset, top, left, bottom, right, depth, comp, 'short')
 
         end_u32 = min(start + 120, len(data) - 19)
-        for offset in range(start, end_u32):
-            top, left, bottom, right = struct.unpack_from('>IIII', data, offset)
+        for offset in range(start, max(start, end_u32)):
+            try:
+                top, left, bottom, right = struct.unpack_from('>IIII', data, offset)
+            except struct.error:
+                break
             w, h = right - left, bottom - top
             if 1 <= w <= 16384 and 1 <= h <= 16384 and top <= 16384 and left <= 16384:
                 depth = struct.unpack_from('>H', data, offset + 16)[0]
@@ -586,9 +1054,47 @@ class ABRParser:
         return None
 
     def _extract_image(self, data: bytes, width: int, height: int,
-                       depth: int, compression: int) -> Optional[bytes]:
-        """Extract raw pixel data from a (possibly RLE-compressed) byte buffer."""
+                       depth: int, compression: int,
+                       channels: int = 1) -> Optional[bytes]:
+        """Extract pixel data, optionally multi-channel (planar → interleaved)."""
         bpp = max(1, depth // 8)
+        channel_size = width * height * bpp
+
+        if channels == 1:
+            return self._extract_single_channel(data, width, height, bpp, compression)
+
+        # Multi-channel: stored as separate planes
+        planes = []
+        f = io.BytesIO(data)
+        for ch in range(channels):
+            remaining = len(data) - f.tell()
+            if remaining < 4:
+                break
+
+            plane = self._extract_single_channel_from_stream(
+                f, width, height, bpp, compression
+            )
+            if plane is None:
+                if ch >= 1:
+                    break
+                return None
+            planes.append(plane)
+
+        if not planes:
+            return None
+
+        # Interleave: plane-separate → pixel-interleaved
+        pixel_count = width * height
+        num_ch = len(planes)
+        result = bytearray(pixel_count * num_ch)
+        for ch, plane in enumerate(planes):
+            for px in range(min(pixel_count, len(plane))):
+                result[px * num_ch + ch] = plane[px]
+
+        return bytes(result)
+
+    def _extract_single_channel(self, data: bytes, width: int, height: int,
+                                bpp: int, compression: int) -> Optional[bytes]:
         expected = width * height * bpp
 
         if compression == 0:
@@ -597,7 +1103,21 @@ class ABRParser:
             return data[:expected]
 
         elif compression == 1:
-            f = io.BytesIO(data)
+            return self._decode_rle_from_bytes(data, width * bpp, height)
+
+        return None
+
+    def _extract_single_channel_from_stream(self, f: io.BytesIO, width: int,
+                                            height: int, bpp: int,
+                                            compression: int) -> Optional[bytes]:
+        """Extract a single channel from an open BytesIO stream, advancing position."""
+        expected = width * height * bpp
+
+        if compression == 0:
+            data = f.read(expected)
+            return data if len(data) == expected else None
+
+        elif compression == 1:
             try:
                 scanline_sizes = [struct.unpack('>H', f.read(2))[0] for _ in range(height)]
             except struct.error:
@@ -605,10 +1125,10 @@ class ABRParser:
 
             result = bytearray()
             row_width = width * bpp
-            for size in scanline_sizes:
-                compressed = f.read(size)
-                if len(compressed) < size:
-                    compressed += b'\x00' * (size - len(compressed))
+            for sl_size in scanline_sizes:
+                compressed = f.read(sl_size)
+                if len(compressed) < sl_size:
+                    compressed += b'\x00' * (sl_size - len(compressed))
                 row = self._decode_packbits(compressed, row_width)
                 result.extend(row)
                 if len(row) < row_width:
@@ -618,21 +1138,51 @@ class ABRParser:
 
         return None
 
-    # ------------------------------------------------------------------ #
+    def _decode_rle_from_bytes(self, data: bytes, row_bytes: int,
+                               height: int) -> Optional[bytes]:
+        f = io.BytesIO(data)
+        try:
+            scanline_sizes = [struct.unpack('>H', f.read(2))[0] for _ in range(height)]
+        except struct.error:
+            return None
+
+        result = bytearray()
+        for sl_size in scanline_sizes:
+            compressed = f.read(sl_size)
+            if len(compressed) < sl_size:
+                compressed += b'\x00' * (sl_size - len(compressed))
+            row = self._decode_packbits(compressed, row_bytes)
+            result.extend(row)
+            if len(row) < row_bytes:
+                result.extend(b'\x00' * (row_bytes - len(row)))
+
+        return bytes(result[:row_bytes * height])
+
+    def _finalize_tip(self, tip: BrushTip) -> None:
+        pixel_count = tip.width * tip.height * tip.channels
+
+        if tip.depth == 16:
+            tip.image_data = self._convert_16_to_8(tip.image_data)
+            tip.depth = 8
+            pixel_count = tip.width * tip.height * tip.channels
+
+        if len(tip.image_data) < pixel_count:
+            tip.image_data += b'\x00' * (pixel_count - len(tip.image_data))
+        tip.image_data = tip.image_data[:pixel_count]
+
+    # ================================================================= #
     #  Conversion helpers                                                  #
-    # ------------------------------------------------------------------ #
+    # ================================================================= #
 
     @staticmethod
     def _convert_16_to_8(data: bytes) -> bytes:
-        """Down-convert 16-bit big-endian grayscale to 8-bit."""
         result = bytearray(len(data) // 2)
         for i in range(0, len(data) - 1, 2):
-            result[i // 2] = data[i]  # take the high byte
+            result[i // 2] = data[i]
         return bytes(result)
 
     @staticmethod
     def _generate_computed_image(size: int, roundness: int, angle: int, hardness: int) -> bytes:
-        """Render a grayscale brush image for a computed (parametric) brush."""
         if size <= 0:
             size = 10
 
@@ -650,10 +1200,8 @@ class ABRParser:
             for x in range(size):
                 dx = x - center + 0.5
                 dy = y - center + 0.5
-
                 rx = dx * cos_a + dy * sin_a
                 ry = (-dx * sin_a + dy * cos_a) / r_factor
-
                 dist = math.sqrt(rx * rx + ry * ry) / radius
 
                 if dist >= 1.0:
@@ -670,12 +1218,45 @@ class ABRParser:
 
         return bytes(pixels)
 
+    # ================================================================= #
+    #  Grayscale extraction from multi-channel data                       #
+    # ================================================================= #
 
-# ------------------------------------------------------------------ #
-#  Convenience wrapper                                                 #
-# ------------------------------------------------------------------ #
+    @staticmethod
+    def get_grayscale(tip: BrushTip) -> bytes:
+        """Return grayscale version. RGBA → uses alpha; RGB → luminance."""
+        if tip.channels == 1:
+            return tip.image_data
 
-def parse_abr(filepath: str) -> List[BrushTip]:
-    """Parse an ABR file and return a list of BrushTip objects."""
+        pixel_count = tip.width * tip.height
+        result = bytearray(pixel_count)
+        ch = tip.channels
+        data = tip.image_data
+
+        if ch == 4:
+            for px in range(pixel_count):
+                idx = px * 4 + 3
+                result[px] = data[idx] if idx < len(data) else 0
+        elif ch == 3:
+            for px in range(pixel_count):
+                base = px * 3
+                if base + 2 < len(data):
+                    r, g, b = data[base], data[base + 1], data[base + 2]
+                    result[px] = min(255, int(0.299 * r + 0.587 * g + 0.114 * b))
+        else:
+            for px in range(pixel_count):
+                idx = px * ch
+                result[px] = data[idx] if idx < len(data) else 0
+
+        return bytes(result)
+
+
+# ===================================================================== #
+#  Convenience wrapper                                                   #
+# ===================================================================== #
+
+def parse_abr(filepath: str) -> Tuple[List[BrushTip], List[BrushPattern]]:
+    """Parse an ABR file and return (brush_tips, patterns)."""
     parser = ABRParser(filepath=filepath)
-    return parser.parse()
+    tips = parser.parse()
+    return tips, parser.patterns
