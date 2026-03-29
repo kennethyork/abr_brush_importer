@@ -3,6 +3,7 @@ Qt dialog for importing ABR brush files into Krita.
 
 Provides:
   - File browser to select .abr files
+  - Online ABR section: download .abr or .zip from a URL, with caching
   - Thumbnail list with brush names and dimensions
   - Large preview pane with metadata
   - Options: Best-match (recommended) or advanced format selection
@@ -15,14 +16,16 @@ from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QListWidget, QListWidgetItem, QFileDialog, QCheckBox,
     QProgressBar, QGroupBox, QMessageBox, QSplitter,
+    QAbstractItemView, QComboBox, QInputDialog,
     QAbstractItemView, QRadioButton, QButtonGroup, QWidget,
 )
-from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap, QIcon
 
 from .abr_parser import ABRParser, BrushTip, BrushPattern
 from .gbr_writer import write_gbr, write_png
 from .kpp_writer import write_kpp
+from . import net_utils
 from .utils import _sanitize, _unique, _choose_format, brushes_dest, patterns_dest
 
 
@@ -127,6 +130,40 @@ class BrushPreviewWidget(QLabel):
 
 
 # ------------------------------------------------------------------ #
+#  Background download worker                                          #
+# ------------------------------------------------------------------ #
+
+class _DownloadWorker(QThread):
+    """Downloads a URL in a background thread and reports progress."""
+
+    progress = pyqtSignal(int, object)  # (downloaded_bytes, total_bytes_or_None)
+    finished = pyqtSignal(list)         # list of local .abr paths on success
+    error = pyqtSignal(str)             # human-readable error message
+
+    def __init__(self, url: str, resource_dir: str,
+                 force_refresh: bool = False, parent=None):
+        super().__init__(parent)
+        self._url = url
+        self._resource_dir = resource_dir
+        self._force_refresh = force_refresh
+
+    def run(self) -> None:
+        try:
+            paths = net_utils.fetch_abr(
+                self._url,
+                self._resource_dir,
+                force_refresh=self._force_refresh,
+                progress_callback=self._on_progress,
+            )
+            self.finished.emit(paths)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+    def _on_progress(self, downloaded: int, total) -> None:
+        self.progress.emit(downloaded, total)
+
+
+# ------------------------------------------------------------------ #
 #  Main dialog                                                         #
 # ------------------------------------------------------------------ #
 
@@ -138,9 +175,11 @@ class ABRImporterDialog(QDialog):
         self.resource_dir = resource_dir
         self.brushes: list = []
         self.patterns: list = []
+        self._url_history: list = []   # MRU list of previously used URLs
+        self._download_worker = None   # holds the active _DownloadWorker
 
         self.setWindowTitle("ABR Brush Importer")
-        self.setMinimumSize(750, 550)
+        self.setMinimumSize(750, 600)
         self._build_ui()
 
     # ---------- UI construction ----------
@@ -157,6 +196,41 @@ class ABRImporterDialog(QDialog):
         file_row.addWidget(self.file_label, 1)
         file_row.addWidget(open_btn)
         root.addLayout(file_row)
+
+        # ── Online ABR section ──
+        online_box = QGroupBox("Online ABR")
+        online_lay = QVBoxLayout(online_box)
+
+        url_row = QHBoxLayout()
+        url_label = QLabel("URL:")
+        self.url_combo = QComboBox()
+        self.url_combo.setEditable(True)
+        self.url_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.url_combo.lineEdit().setPlaceholderText(
+            "https://example.com/brushes.abr  or  …/brushes.zip"
+        )
+        url_row.addWidget(url_label)
+        url_row.addWidget(self.url_combo, 1)
+        online_lay.addLayout(url_row)
+
+        btn_row = QHBoxLayout()
+        self.download_btn = QPushButton("Download")
+        self.download_btn.clicked.connect(self._start_download)
+        self.refresh_btn = QPushButton("Force Refresh")
+        self.refresh_btn.setToolTip("Re-download even if already cached")
+        self.refresh_btn.clicked.connect(self._force_refresh)
+        self.clear_cache_btn = QPushButton("Clear Cache")
+        self.clear_cache_btn.setToolTip(
+            "Delete all files downloaded by this plugin"
+        )
+        self.clear_cache_btn.clicked.connect(self._clear_cache)
+        btn_row.addWidget(self.download_btn)
+        btn_row.addWidget(self.refresh_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(self.clear_cache_btn)
+        online_lay.addLayout(btn_row)
+
+        root.addWidget(online_box)
 
         # ── Splitter: list | preview ──
         splitter = QSplitter(Qt.Horizontal)
@@ -262,6 +336,9 @@ class ABRImporterDialog(QDialog):
         # ── Progress ──
         self.progress = QProgressBar()
         self.progress.setVisible(False)
+        self.progress_label = QLabel("")
+        self.progress_label.setVisible(False)
+        root.addWidget(self.progress_label)
         root.addWidget(self.progress)
 
         # ── Buttons ──
@@ -285,7 +362,118 @@ class ABRImporterDialog(QDialog):
         )
         if not filepath:
             return
+        self._load_abr_file(filepath)
 
+    # ---------- Online ABR slots ----------
+
+    def _get_url(self) -> str:
+        """Return the current URL from the combo box, stripped of whitespace."""
+        return self.url_combo.currentText().strip()
+
+    def _start_download(self, *, force: bool = False) -> None:
+        url = self._get_url()
+        if not url:
+            QMessageBox.warning(self, "No URL", "Please enter a URL to download.")
+            return
+
+        self._run_download(url, force_refresh=force)
+
+    def _force_refresh(self) -> None:
+        self._start_download(force=True)
+
+    def _run_download(self, url: str, *, force_refresh: bool = False) -> None:
+        """Kick off a background download for *url*."""
+        self._set_download_ui_busy(True)
+        self.progress_label.setText("Downloading…")
+        self.progress_label.setVisible(True)
+        self.progress.setRange(0, 0)  # indeterminate
+        self.progress.setVisible(True)
+
+        worker = _DownloadWorker(url, self.resource_dir, force_refresh=force_refresh)
+        worker.progress.connect(self._on_download_progress)
+        worker.finished.connect(self._on_download_finished)
+        worker.error.connect(self._on_download_error)
+        # Keep a reference so the worker is not garbage-collected
+        self._download_worker = worker
+        worker.start()
+
+    def _on_download_progress(self, downloaded: int, total) -> None:
+        if total:
+            self.progress.setRange(0, total)
+            self.progress.setValue(downloaded)
+            mb = downloaded / (1024 * 1024)
+            total_mb = total / (1024 * 1024)
+            self.progress_label.setText(
+                f"Downloading… {mb:.1f} / {total_mb:.1f} MB"
+            )
+        else:
+            self.progress.setRange(0, 0)  # keep indeterminate
+            mb = downloaded / (1024 * 1024)
+            self.progress_label.setText(f"Downloading… {mb:.1f} MB")
+
+    def _on_download_finished(self, abr_paths: list) -> None:
+        self._set_download_ui_busy(False)
+        self.progress.setVisible(False)
+        self.progress_label.setVisible(False)
+
+        url = self._get_url()
+        # Add to history (avoid duplicates)
+        if url and url not in self._url_history:
+            self._url_history.insert(0, url)
+            self.url_combo.insertItem(0, url)
+
+        if not abr_paths:
+            QMessageBox.warning(
+                self, "Download Complete",
+                "Download succeeded but no .abr files were found.",
+            )
+            return
+
+        if len(abr_paths) == 1:
+            self._load_abr_file(abr_paths[0])
+        else:
+            # Multiple ABR files in a zip — let the user pick one
+            names = [os.path.basename(p) for p in abr_paths]
+            chosen, ok = QInputDialog.getItem(
+                self,
+                "Select ABR File",
+                "The archive contains multiple .abr files.\nChoose one to open:",
+                names,
+                0,
+                False,
+            )
+            if ok and chosen:
+                idx = names.index(chosen)
+                self._load_abr_file(abr_paths[idx])
+
+    def _on_download_error(self, message: str) -> None:
+        self._set_download_ui_busy(False)
+        self.progress.setVisible(False)
+        self.progress_label.setVisible(False)
+        QMessageBox.critical(self, "Download Error", f"Download failed:\n{message}")
+
+    def _set_download_ui_busy(self, busy: bool) -> None:
+        self.download_btn.setEnabled(not busy)
+        self.refresh_btn.setEnabled(not busy)
+        self.clear_cache_btn.setEnabled(not busy)
+
+    def _clear_cache(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Clear Cache",
+            "Delete all files downloaded by this plugin?\n"
+            f"Cache folder: {net_utils.get_cache_dir(self.resource_dir)}",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if answer == QMessageBox.Yes:
+            count = net_utils.clear_cache(self.resource_dir)
+            QMessageBox.information(
+                self, "Cache Cleared",
+                f"Deleted {count} cached file(s).",
+            )
+
+    def _load_abr_file(self, filepath: str) -> None:
+        """Parse an .abr file and populate the brush list (shared by file and download paths)."""
         self.file_label.setText(filepath)
         self.brush_list.clear()
         self.brushes = []
