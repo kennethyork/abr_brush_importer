@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=Krita/PythonPlugin
+X-KDE-Library=abr_brush_importer
+X-Python-2-Compatible=false
+Name=ABR Brush Importer
+Comment=Import Adobe Photoshop .abr brush files into Krita with full preview and format conversion. Supports ABR v1, v2, v6, v7, v10+.
