@@ -470,4 +470,214 @@ assert os.path.isdir(p_dir), "patterns_dest creates directory"
 shutil.rmtree(tmp_res)
 print("brushes_dest / patterns_dest: OK")
 
+# ================================================================== #
+#  New module tests                                                    #
+# ================================================================== #
+
+# ── ImportDB ──
+from abr_brush_importer.import_db import ImportDB
+
+tmp_db = tempfile.mkdtemp()
+
+# Fresh DB: every path is considered changed
+db = ImportDB(tmp_db)
+assert db.is_changed("/fake/brushes.abr"), "ImportDB: new path should be changed"
+
+# Create a real file so mtime can be read
+abr_fake = os.path.join(tmp_db, "test.abr")
+open(abr_fake, "w").close()
+db.mark_imported(abr_fake)
+assert not db.is_changed(abr_fake), "ImportDB: unchanged file should not be changed"
+
+# Touch the file to change its mtime
+import time as _time_mod
+_time_mod.sleep(0.05)
+os.utime(abr_fake, None)
+assert db.is_changed(abr_fake), "ImportDB: touched file should be changed again"
+
+# Error logging
+db.log_error(abr_fake, "some parse error")
+errors = db.get_recent_errors(5)
+assert len(errors) == 1, "ImportDB: one error logged"
+assert errors[0]["message"] == "some parse error", "ImportDB: error message stored"
+
+# get_last_import_time: non-None after mark_imported
+db.mark_imported(abr_fake)
+t = db.get_last_import_time()
+assert t is not None and isinstance(t, float), "ImportDB: last import time is a float"
+t2 = db.get_last_import_time(abr_fake)
+assert t2 is not None, "ImportDB: per-file last import time not None"
+
+# Persistence: reload from disk
+db2 = ImportDB(tmp_db)
+assert not db2.is_changed(abr_fake), "ImportDB: persisted state not changed after reload"
+
+# tracked_paths
+paths = db2.tracked_paths()
+assert abr_fake in paths, "ImportDB: tracked_paths includes imported file"
+
+shutil.rmtree(tmp_db)
+print("ImportDB: OK")
+
+# ── AutoImportSettings ──
+from abr_brush_importer.auto_import import AutoImportSettings
+
+tmp_cfg = tempfile.mkdtemp()
+s = AutoImportSettings(tmp_cfg)
+
+# Defaults
+assert s.auto_import_enabled is False, "AutoImportSettings: default enabled=False"
+assert s.watch_folder_path == "", "AutoImportSettings: default folder empty"
+assert s.watch_recursive is False, "AutoImportSettings: default recursive=False"
+assert s.auto_import_on_startup is False, "AutoImportSettings: default startup=False"
+assert s.auto_refresh_resources is True, "AutoImportSettings: default refresh=True"
+assert isinstance(s.max_download_bytes, int), "AutoImportSettings: max_download_bytes is int"
+assert isinstance(s.auto_download_urls, list), "AutoImportSettings: auto_download_urls is list"
+
+# Set and persist
+s.auto_import_enabled = True
+s.watch_folder_path = "/tmp/abr_test"
+s.watch_recursive = True
+s.auto_import_on_startup = True
+s.auto_refresh_resources = False
+
+# Reload from disk
+s2 = AutoImportSettings(tmp_cfg)
+assert s2.auto_import_enabled is True, "AutoImportSettings: persisted enabled"
+assert s2.watch_folder_path == "/tmp/abr_test", "AutoImportSettings: persisted folder"
+assert s2.watch_recursive is True, "AutoImportSettings: persisted recursive"
+assert s2.auto_import_on_startup is True, "AutoImportSettings: persisted startup"
+assert s2.auto_refresh_resources is False, "AutoImportSettings: persisted refresh"
+
+shutil.rmtree(tmp_cfg)
+print("AutoImportSettings: OK")
+
+# ── ImportOptions / ImportResult ──
+from abr_brush_importer.import_pipeline import ImportOptions, ImportResult, import_abr_files
+
+opts = ImportOptions()
+assert opts.use_best_match is True, "ImportOptions: default use_best_match"
+assert opts.use_pressure is True, "ImportOptions: default use_pressure"
+assert opts.export_patterns is True, "ImportOptions: default export_patterns"
+
+res = ImportResult(imported=3, skipped=1)
+assert res.ok is True, "ImportResult: ok when imported>0 and no errors"
+assert res.total_errors == 0, "ImportResult: total_errors 0"
+
+res_err = ImportResult(imported=0, errors=["oops"])
+assert res_err.ok is False, "ImportResult: not ok when imported=0"
+assert res_err.total_errors == 1, "ImportResult: total_errors counts errors"
+print("ImportOptions / ImportResult: OK")
+
+# ── import_abr_files: empty paths ──
+tmp_pipe = tempfile.mkdtemp()
+result = import_abr_files([], tmp_pipe, ImportOptions(auto_refresh=False))
+assert result.imported == 0, "import_abr_files: empty paths → 0 imported"
+assert result.skipped == 0, "import_abr_files: empty paths → 0 skipped"
+shutil.rmtree(tmp_pipe)
+print("import_abr_files (empty): OK")
+
+# ── import_abr_files: real v1 ABR file ──
+import struct as _struct
+
+def _build_fake_v1_abr():
+    buf = bytearray()
+    buf += _struct.pack(">H", 1)
+    buf += _struct.pack(">H", 1)
+    brush_data = bytearray()
+    brush_data += _struct.pack(">I", 0)
+    brush_data += _struct.pack(">H", 25)
+    brush_data += _struct.pack(">H", 20)
+    brush_data += _struct.pack(">H", 100)
+    brush_data += _struct.pack(">H", 0)
+    brush_data += _struct.pack(">H", 100)
+    buf += _struct.pack(">H", 1)
+    buf += _struct.pack(">I", len(brush_data))
+    buf += brush_data
+    return bytes(buf)
+
+tmp_pipe2 = tempfile.mkdtemp()
+fake_abr_path = os.path.join(tmp_pipe2, "fake.abr")
+with open(fake_abr_path, "wb") as f:
+    f.write(_build_fake_v1_abr())
+
+result2 = import_abr_files(
+    [fake_abr_path], tmp_pipe2,
+    ImportOptions(use_best_match=True, auto_refresh=False),
+)
+assert result2.imported == 1, f"import_abr_files: expected 1 imported, got {result2.imported}"
+assert result2.errors == [], f"import_abr_files: expected no errors, got {result2.errors}"
+
+# Verify the .gbr was written (no dynamics → gbr)
+brushes_dir = os.path.join(tmp_pipe2, "brushes")
+gbr_files = [f for f in os.listdir(brushes_dir) if f.endswith(".gbr")]
+assert gbr_files, "import_abr_files: .gbr file should be written"
+print(f"import_abr_files (v1 ABR): OK  [{gbr_files[0]}]")
+
+# ── import_abr_files: DB skips unchanged ──
+db_pipe = ImportDB(tmp_pipe2)
+db_pipe.mark_imported(fake_abr_path)
+result3 = import_abr_files(
+    [fake_abr_path], tmp_pipe2,
+    ImportOptions(auto_refresh=False),
+    db=db_pipe,
+)
+assert result3.imported == 0, "import_abr_files: unchanged file should be skipped"
+assert result3.skipped == 1, "import_abr_files: skipped count should be 1"
+print("import_abr_files (DB skip): OK")
+
+# ── import_abr_files: DB marks re-import after file change ──
+_time_mod.sleep(0.05)
+os.utime(fake_abr_path, None)  # bump mtime
+result4 = import_abr_files(
+    [fake_abr_path], tmp_pipe2,
+    ImportOptions(auto_refresh=False),
+    db=db_pipe,
+)
+assert result4.imported == 1, "import_abr_files: changed file should be re-imported"
+print("import_abr_files (DB re-import after mtime change): OK")
+
+shutil.rmtree(tmp_pipe2)
+
+# ── scan_and_import: non-existent folder returns empty result ──
+from abr_brush_importer.auto_import import scan_and_import
+
+res_none = scan_and_import("/nonexistent/path", tmp_pipe2)
+assert res_none.imported == 0, "scan_and_import: missing folder → 0 imported"
+print("scan_and_import (missing folder): OK")
+
+# ── scan_and_import: folder with no .abr files ──
+tmp_empty = tempfile.mkdtemp()
+res_empty = scan_and_import(tmp_empty, tmp_empty)
+assert res_empty.imported == 0, "scan_and_import: empty folder → 0 imported"
+shutil.rmtree(tmp_empty)
+print("scan_and_import (empty folder): OK")
+
+# ── scan_and_import: folder with one .abr file ──
+tmp_scan = tempfile.mkdtemp()
+scan_abr = os.path.join(tmp_scan, "brushes.abr")
+with open(scan_abr, "wb") as f:
+    f.write(_build_fake_v1_abr())
+
+res_scan = scan_and_import(
+    tmp_scan, tmp_scan,
+    options=ImportOptions(auto_refresh=False),
+)
+assert res_scan.imported == 1, f"scan_and_import: expected 1, got {res_scan.imported}"
+print("scan_and_import (one .abr): OK")
+
+# Second scan: same file unchanged → should be skipped
+db_scan = ImportDB(tmp_scan)
+# Mark the file so the DB considers it already imported
+db_scan.mark_imported(scan_abr)
+res_scan2 = scan_and_import(
+    tmp_scan, tmp_scan,
+    db=db_scan,
+    options=ImportOptions(auto_refresh=False),
+)
+assert res_scan2.skipped == 1, "scan_and_import: second run skips unchanged file"
+print("scan_and_import (skip unchanged): OK")
+
+shutil.rmtree(tmp_scan)
+
 print("\nAll tests passed!")
