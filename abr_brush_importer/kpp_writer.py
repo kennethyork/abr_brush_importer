@@ -28,7 +28,8 @@ from .abr_parser import ABRParser, BrushTip, BrushDynamics
 # ------------------------------------------------------------------ #
 
 def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
-              use_pressure: bool = True) -> None:
+              use_pressure: bool = True,
+              preset_name: Optional[str] = None) -> None:
     """Write a Krita Preset (.kpp) file from a *BrushTip*.
 
     The preset embeds the brush tip as a GBR file inside the ZIP so the
@@ -46,8 +47,12 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
         When True (default), enable pressure sensitivity for brush size.
         If the ABR contained explicit pressure curves for opacity or flow
         those are always applied regardless of this flag.
+    preset_name : str, optional
+        Override name for the preset.  When ``None`` (default), uses
+        ``tip.name``.  Pass a friendly name here to avoid UUIDs in
+        both the ``preset.xml`` and the embedded ``.gbr`` filename.
     """
-    name = tip.name or "Imported Brush"
+    name = preset_name or tip.name or "Imported Brush"
     safe = _sanitize_filename(name)
     tip_filename = f"{safe}.gbr"
 

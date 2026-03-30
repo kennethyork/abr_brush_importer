@@ -654,7 +654,8 @@ class ABRImporterDialog(QDialog):
             try:
                 # Always write a .kpp preset to paintoppresets/
                 kpp_path = _unique(os.path.join(presets_dir, f"{safe_name}.kpp"))
-                write_kpp(kpp_path, tip, invert=invert, use_pressure=use_pressure)
+                write_kpp(kpp_path, tip, invert=invert, use_pressure=use_pressure,
+                          preset_name=safe_name)
                 written_preset_files.append(kpp_path)
 
                 # Also write brush tip (.gbr) to brushes/
@@ -664,7 +665,7 @@ class ABRImporterDialog(QDialog):
                     if invert and ch > 1:
                         gbr_pixels = bytes(255 - b for b in gbr_pixels)
                     path = _unique(os.path.join(brushes_dir, f"{safe_name}.gbr"))
-                    write_gbr(path, tip.name or safe_name,
+                    write_gbr(path, safe_name,
                               tip.width, tip.height, gbr_pixels, tip.spacing,
                               channels=1)
                     written_brush_files.append(path)
@@ -675,7 +676,7 @@ class ABRImporterDialog(QDialog):
                         if invert and ch > 1:
                             gbr_pixels = bytes(255 - b for b in gbr_pixels)
                         path = _unique(os.path.join(brushes_dir, f"{safe_name}.gbr"))
-                        write_gbr(path, tip.name or safe_name,
+                        write_gbr(path, safe_name,
                                   tip.width, tip.height, gbr_pixels, tip.spacing,
                                   channels=1)
                         written_brush_files.append(path)

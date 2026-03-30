@@ -163,6 +163,7 @@ def import_abr_files(
                     kpp_path, tip,
                     invert=options.invert,
                     use_pressure=options.use_pressure,
+                    preset_name=safe_name,
                 )
                 written_preset_files.append(kpp_path)
 
@@ -173,7 +174,7 @@ def import_abr_files(
                         gbr_pixels = bytes(255 - b for b in gbr_pixels)
                     path = _unique(os.path.join(brushes_dir, f"{safe_name}.gbr"))
                     write_gbr(
-                        path, tip.name or safe_name,
+                        path, safe_name,
                         tip.width, tip.height, gbr_pixels, tip.spacing,
                         channels=1,
                     )
@@ -185,7 +186,7 @@ def import_abr_files(
                             gbr_pixels = bytes(255 - b for b in gbr_pixels)
                         path = _unique(os.path.join(brushes_dir, f"{safe_name}.gbr"))
                         write_gbr(
-                            path, tip.name or safe_name,
+                            path, safe_name,
                             tip.width, tip.height, gbr_pixels, tip.spacing,
                             channels=1,
                         )
