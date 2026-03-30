@@ -18,11 +18,11 @@ import sqlite3
 import time
 from typing import List, Optional
 
-# Krita resource-type IDs (as defined in its resourcecache schema)
+# Krita 5.x resource-type IDs (as defined in its resourcecache schema)
 _RESOURCE_TYPES = {
     "brushes": 1,
-    "paintoppresets": 5,
-    "patterns": 7,
+    "paintoppresets": 7,
+    "patterns": 9,
 }
 
 # The default folder-storage ID used by Krita for its writable directory.

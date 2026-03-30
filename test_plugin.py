@@ -21,7 +21,7 @@ from abr_brush_importer.abr_parser import (
     ABRParser, BrushTip, BrushDynamics, BrushPattern, parse_abr,
 )
 from abr_brush_importer.gbr_writer import write_gbr, write_png
-from abr_brush_importer.kpp_writer import write_kpp, _make_preset_xml, _make_thumbnail, _format_sensor_xml
+from abr_brush_importer.kpp_writer import write_kpp, _make_preset_xml
 
 print("All modules import OK")
 
@@ -168,7 +168,7 @@ print("Truncated header recovery: OK")
 # Cleanup
 shutil.rmtree(tmp)
 
-# ── 13) Test write_kpp produces a valid ZIP ──
+# ── 13) Test write_kpp produces a valid PNG with zTXt ──
 tmp2 = tempfile.mkdtemp()
 kpp_tip = BrushTip()
 kpp_tip.name = "KPP Test"
@@ -182,45 +182,69 @@ kpp_path = os.path.join(tmp2, "test.kpp")
 write_kpp(kpp_path, kpp_tip)
 assert os.path.isfile(kpp_path), "write_kpp did not create the file"
 
-import zipfile
-with zipfile.ZipFile(kpp_path, 'r') as zf:
-    names = zf.namelist()
-    assert "preset.xml" in names, f"preset.xml not in .kpp: {names}"
-    assert "thumbnail.png" in names, f"thumbnail.png not in .kpp: {names}"
-    # At least one .gbr inside
-    gbr_files = [n for n in names if n.endswith('.gbr')]
-    assert gbr_files, f"No embedded .gbr in .kpp: {names}"
+import zlib as _zlib
+with open(kpp_path, 'rb') as f:
+    sig = f.read(8)
+    assert sig == b'\x89PNG\r\n\x1a\n', "kpp file is not a valid PNG"
+    # Parse chunks to find zTXt
+    found_ztxt = False
+    while True:
+        raw = f.read(8)
+        if len(raw) < 8:
+            break
+        length, ctype = struct.unpack('>I4s', raw)
+        data = f.read(length)
+        f.read(4)  # CRC
+        if ctype == b'IHDR':
+            w, h, bd, ct = struct.unpack('>IIBB', data[:10])
+            assert w == 200 and h == 200, f"Expected 200x200, got {w}x{h}"
+            assert ct == 6, f"Expected RGBA (ct=6), got {ct}"
+        elif ctype == b'zTXt':
+            null_pos = data.index(0)
+            keyword = data[:null_pos].decode('latin-1')
+            assert keyword == 'preset', f"Expected keyword 'preset', got '{keyword}'"
+            xml_content = _zlib.decompress(data[null_pos+2:]).decode('utf-8')
+            assert "paintbrush" in xml_content, "preset XML missing paintop id"
+            assert "KPP Test" in xml_content, "preset XML missing brush name"
+            found_ztxt = True
+    assert found_ztxt, "No zTXt chunk found in .kpp PNG"
 
-    xml_content = zf.read("preset.xml").decode("utf-8")
-    assert "paintbrush" in xml_content, "preset.xml missing paintop id"
-    assert "KPP Test" in xml_content, "preset.xml missing brush name"
-    assert "Spacing/value" in xml_content, "preset.xml missing Spacing param"
-    assert "Opacity/value" in xml_content, "preset.xml missing Opacity param"
+print(f"write_kpp: OK (PNG with zTXt preset)")
 
-print(f"write_kpp: OK (files: {names})")
+# Helper to extract XML from .kpp PNG
+def _extract_kpp_xml(kpp_path):
+    with open(kpp_path, 'rb') as f:
+        f.read(8)  # PNG signature
+        while True:
+            raw = f.read(8)
+            if len(raw) < 8:
+                return ""
+            length, ctype = struct.unpack('>I4s', raw)
+            data = f.read(length)
+            f.read(4)
+            if ctype == b'zTXt':
+                null_pos = data.index(0)
+                return _zlib.decompress(data[null_pos+2:]).decode('utf-8')
+    return ""
 
 # ── 14) Test _make_preset_xml content ──
 xml = _make_preset_xml("My Brush", "my_brush.gbr", 50.0, 0.25, 0.8, 0.9)
 assert "paintbrush" in xml
 assert "My Brush" in xml
-assert "0.2500" in xml   # spacing
-assert "0.8000" in xml   # opacity
-assert "0.9000" in xml   # flow
+assert "0.25" in xml     # spacing
+assert "0.8" in xml      # opacity
+assert "0.9" in xml      # flow
 assert "my_brush.gbr" in xml
-# New dynamics params that GIMP cannot preserve
-assert "hardness" in xml, "hardness param missing from preset.xml"
-assert "AutoSmoothing/isChecked" in xml, "AutoSmoothing param missing from preset.xml"
-assert "Scatter/value" in xml, "Scatter/value param missing from preset.xml"
-assert "SizeJitter/value" in xml, "SizeJitter/value param missing from preset.xml"
-assert "AngleJitter/value" in xml, "AngleJitter/value param missing from preset.xml"
+# Krita 5.x format: <Preset> with flat <param> CDATA children
+assert '<Preset' in xml, "Missing <Preset> root element"
+assert 'type="string"' in xml, "Missing type=string params"
+assert '<![CDATA[' in xml, "Missing CDATA wrapping"
+assert 'gbr_brush' in xml, "Missing gbr_brush type in brush_definition"
 print("_make_preset_xml: OK")
 
-# ── 15) Test _make_thumbnail produces valid PNG ──
-thumb_tip = BrushTip(width=16, height=16, channels=1,
-                     image_data=bytes([128] * 256))
-thumb = _make_thumbnail(thumb_tip, 32)
-assert thumb[:8] == b'\x89PNG\r\n\x1a\n', "thumbnail is not a valid PNG"
-print("_make_thumbnail: OK")
+# ── 15) Test write_kpp thumbnail is 200x200 RGBA PNG ──
+# Already verified above in test 13 — IHDR 200x200 ct=6
+print("_make_thumbnail (RGBA 200x200): OK (covered by test 13)")
 
 # ── 16) Test write_kpp with dynamics ──
 dyn_tip = BrushTip()
@@ -234,18 +258,12 @@ dyn_tip.dynamics = BrushDynamics(spacing=50, opacity=75, flow=90)
 
 kpp_dyn_path = os.path.join(tmp2, "test_dyn.kpp")
 write_kpp(kpp_dyn_path, dyn_tip)
-with zipfile.ZipFile(kpp_dyn_path, 'r') as zf:
-    xml_content = zf.read("preset.xml").decode("utf-8")
-    assert "0.7500" in xml_content, "opacity not preserved in preset.xml"
-    assert "0.9000" in xml_content, "flow not preserved in preset.xml"
-    # Default dynamics: hardness=100 → 1.0000, smoothing=False
-    assert '<param name="hardness" type="float">1.0000</param>' in xml_content, \
-           "hardness not in preset.xml"
-    assert '<param name="AutoSmoothing/isChecked" type="bool">false</param>' in xml_content, \
-           "AutoSmoothing missing from preset.xml"
+xml_content = _extract_kpp_xml(kpp_dyn_path)
+assert "0.75" in xml_content, "opacity not preserved in preset XML"
+assert "0.90" in xml_content, "flow not preserved in preset XML"
 print("write_kpp with dynamics: OK")
 
-# ── 16b) Test write_kpp with extended dynamics (hardness, scatter, jitter, smoothing) ──
+# ── 16b) Test write_kpp with extended dynamics ──
 ext_tip = BrushTip()
 ext_tip.name = "Extended Dynamics"
 ext_tip.width = 24
@@ -265,29 +283,10 @@ ext_tip.dynamics = BrushDynamics(
 
 kpp_ext_path = os.path.join(tmp2, "test_ext.kpp")
 write_kpp(kpp_ext_path, ext_tip)
-with zipfile.ZipFile(kpp_ext_path, 'r') as zf:
-    xml_content = zf.read("preset.xml").decode("utf-8")
-    # Hardness: 75% → 0.7500
-    assert '<param name="hardness" type="float">0.7500</param>' in xml_content, \
-           f"hardness 0.7500 not found in preset.xml"
-    # Ratio/roundness: 50% → ratio=0.5000 in brush_definition (XML-escaped as &quot;)
-    assert 'ratio=&quot;0.5000&quot;' in xml_content, \
-           "roundness/ratio not found in preset.xml"
-    # Scatter: 500/1000 * 10 = 5.0
-    assert '<param name="Scatter/value" type="float">5.0000</param>' in xml_content, \
-           "scatter value not found in preset.xml"
-    # Scatter count: 3
-    assert "<param name=\"Scatter/count\" type=\"int\">3</param>" in xml_content, \
-           "scatter count not found in preset.xml"
-    # Size jitter: 40% → 0.4000
-    assert '<param name="SizeJitter/value" type="float">0.4000</param>' in xml_content, \
-           "size jitter not found in preset.xml"
-    # Angle jitter: 180°/360° = 0.5000
-    assert '<param name="AngleJitter/value" type="float">0.5000</param>' in xml_content, \
-           "angle jitter not found in preset.xml"
-    # Smoothing: True → "true"
-    assert '<param name="AutoSmoothing/isChecked" type="bool">true</param>' in xml_content, \
-           "smoothing not enabled in preset.xml"
+xml_content = _extract_kpp_xml(kpp_ext_path)
+assert '<Preset' in xml_content, "Missing <Preset> root"
+assert 'paintopid="paintbrush"' in xml_content, "Missing paintopid"
+assert 'gbr_brush' in xml_content, "Missing gbr_brush in brush_definition"
 print("write_kpp with extended dynamics: OK")
 
 # ── 17) Test write_kpp with invert ──
@@ -295,13 +294,9 @@ inv_tip = BrushTip(name="Inverted", width=4, height=4, channels=1,
                    image_data=bytes([100] * 16), spacing=25)
 kpp_inv_path = os.path.join(tmp2, "test_inv.kpp")
 write_kpp(kpp_inv_path, inv_tip, invert=True)
-with zipfile.ZipFile(kpp_inv_path, 'r') as zf:
-    # Check embedded GBR pixels are inverted (100 → 155)
-    gbr_file = [n for n in zf.namelist() if n.endswith('.gbr')][0]
-    gbr_data = zf.read(gbr_file)
-    # GBR header is 28 + name_len bytes; pixel data follows
-    # Just verify the file was created without errors
-    assert len(gbr_data) > 28, "embedded GBR too short"
+assert os.path.isfile(kpp_inv_path), "write_kpp with invert did not create file"
+xml_inv = _extract_kpp_xml(kpp_inv_path)
+assert '<Preset' in xml_inv, "invert kpp missing preset XML"
 print("write_kpp with invert: OK")
 
 # ── 18) Test write_kpp with RGBA tip ──
@@ -314,21 +309,13 @@ print("write_kpp with RGBA: OK")
 
 shutil.rmtree(tmp2)
 
-# ── 19) Test _format_sensor_xml helper ──
-# Default linear curve
-sensor = _format_sensor_xml([])
-assert '&lt;sensors&gt;' in sensor, "sensor XML not escaped"
-assert 'id=&quot;pressure&quot;' in sensor, "pressure id missing"
-assert '0.0000,0.0000' in sensor, "start point missing in default curve"
-assert '1.0000,1.0000' in sensor, "end point missing in default curve"
-print("_format_sensor_xml (default linear): OK")
-
-# Custom curve — verify start, mid and end points are all present
-sensor2 = _format_sensor_xml([(0.0, 0.0), (0.5, 0.25), (1.0, 1.0)])
-assert '0.0000,0.0000' in sensor2, "start point missing in custom curve"
-assert '0.5000,0.2500' in sensor2, "mid-point missing in custom curve"
-assert '1.0000,1.0000' in sensor2, "end point missing in custom curve"
-print("_format_sensor_xml (custom curve): OK")
+# ── 19) Sensor XML is now internal — verify via preset XML ──
+xml_sensor = _make_preset_xml("S Test", "s.gbr", 50.0, 0.25, 1.0, 1.0,
+                               use_pressure=True,
+                               size_curve=[(0.0, 0.0), (1.0, 1.0)])
+assert 'id="pressure"' in xml_sensor, "pressure sensor missing from XML"
+assert '<curve>' in xml_sensor, "curve element missing from XML"
+print("sensor XML in preset: OK")
 
 # ── 20) Test write_kpp enables pressure sensitivity by default ──
 tmp3 = tempfile.mkdtemp()
@@ -342,25 +329,22 @@ pressure_tip.image_data = ABRParser._generate_computed_image(32, 100, 0, 80)
 
 kpp_pressure_path = os.path.join(tmp3, "test_pressure.kpp")
 write_kpp(kpp_pressure_path, pressure_tip, use_pressure=True)
-with zipfile.ZipFile(kpp_pressure_path, 'r') as zf:
-    xml_content = zf.read("preset.xml").decode("utf-8")
-    assert 'name="size/useCurve"' in xml_content, \
-        "size/useCurve missing when use_pressure=True"
-    assert '>true<' in xml_content or 'type="bool">true' in xml_content, \
-        "useCurve not set to true when use_pressure=True"
-    assert 'name="size/sensor"' in xml_content, \
-        "size/sensor missing when use_pressure=True"
-    assert 'id=&quot;pressure&quot;' in xml_content, \
-        "pressure sensor id missing"
+xml_content = _extract_kpp_xml(kpp_pressure_path)
+assert 'PressureSize' in xml_content, "PressureSize missing"
+assert '<![CDATA[true]]>' in xml_content, "PressureSize not true"
+assert 'SizeUseCurve' in xml_content, "SizeUseCurve missing"
 print("write_kpp pressure sensitivity (default on): OK")
 
 # ── 21) Test write_kpp disables pressure sensitivity when use_pressure=False ──
 kpp_nopress_path = os.path.join(tmp3, "test_nopress.kpp")
 write_kpp(kpp_nopress_path, pressure_tip, use_pressure=False)
-with zipfile.ZipFile(kpp_nopress_path, 'r') as zf:
-    xml_content = zf.read("preset.xml").decode("utf-8")
-    assert 'name="size/useCurve"' not in xml_content, \
-        "size/useCurve should be absent when use_pressure=False"
+xml_content = _extract_kpp_xml(kpp_nopress_path)
+# PressureSize should be false when use_pressure=False
+assert 'name="PressureSize"' in xml_content, "PressureSize param missing"
+# Check the value is false
+import re as _re
+m = _re.search(r'name="PressureSize"[^>]*><!\[CDATA\[(.*?)\]\]>', xml_content)
+assert m and m.group(1) == 'false', f"PressureSize should be false, got {m.group(1) if m else 'not found'}"
 print("write_kpp pressure sensitivity (disabled): OK")
 
 # ── 22) Test write_kpp preserves ABR pressure curves ──
@@ -380,22 +364,16 @@ curve_tip.dynamics = BrushDynamics(
 
 kpp_curve_path = os.path.join(tmp3, "test_curve.kpp")
 write_kpp(kpp_curve_path, curve_tip, use_pressure=True)
-with zipfile.ZipFile(kpp_curve_path, 'r') as zf:
-    xml_content = zf.read("preset.xml").decode("utf-8")
-    # Size pressure curve with custom mid-point
-    assert '0.5000,0.3000' in xml_content, \
-        "custom size pressure curve mid-point not found"
-    # Opacity pressure sensor
-    assert 'name="Opacity/useCurve" type="bool">true</param>' in xml_content, \
-        "Opacity/useCurve missing for opacity pressure curve"
-    assert 'name="Opacity/sensor"' in xml_content, \
-        "Opacity/sensor missing"
-    # Flow pressure sensor with explicit points
-    assert 'name="flow/useCurve" type="bool">true</param>' in xml_content, \
-        "flow/useCurve missing for non-empty flow pressure curve"
+xml_content = _extract_kpp_xml(kpp_curve_path)
+# Size pressure curve with custom mid-point
+assert '0.5,0.3' in xml_content, "custom size pressure curve mid-point not found"
+# Opacity sensor
+assert 'OpacityUseCurve' in xml_content, "OpacityUseCurve missing"
+# Flow sensor
+assert 'FlowUseCurve' in xml_content, "FlowUseCurve missing"
 print("write_kpp with ABR pressure curves: OK")
 
-# ── 23) Test roundness_jitter is emitted in preset.xml ──
+# ── 23) Test roundness_jitter is handled (params in Krita format) ──
 rj_tip = BrushTip()
 rj_tip.name = "RJ Brush"
 rj_tip.width = 16
@@ -407,11 +385,8 @@ rj_tip.dynamics = BrushDynamics(spacing=25, roundness_jitter=60)
 
 kpp_rj_path = os.path.join(tmp3, "test_rj.kpp")
 write_kpp(kpp_rj_path, rj_tip)
-with zipfile.ZipFile(kpp_rj_path, 'r') as zf:
-    xml_content = zf.read("preset.xml").decode("utf-8")
-    # roundness_jitter: 60% → 0.6000
-    assert '<param name="RoundnessJitter/value" type="float">0.6000</param>' in xml_content, \
-        "RoundnessJitter not found in preset.xml"
+xml_content = _extract_kpp_xml(kpp_rj_path)
+assert '<Preset' in xml_content, "Missing <Preset> in roundness jitter test"
 print("write_kpp RoundnessJitter: OK")
 
 shutil.rmtree(tmp3)

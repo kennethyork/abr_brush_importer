@@ -1,23 +1,20 @@
 """
 Krita Preset (.kpp) writer.
 
-A .kpp file is a ZIP archive containing:
-  - preset.xml   — brush settings in Krita's XML format
-  - thumbnail.png — 64×64 preview image
-  - <name>.gbr   — embedded brush tip (GIMP Brush v2)
+A Krita 5.x .kpp file is a **PNG image** (200×200 thumbnail) with a
+``zTXt`` chunk (keyword ``"preset"``) containing zlib-compressed XML
+preset settings.  The brush tip itself lives as a separate ``.gbr``
+file in ``brushes/`` and is referenced by filename inside the XML.
 
-The generated preset uses Krita's "paintbrush" (pixel brush) paint operation,
-mapping ABR brush properties (spacing, opacity, flow, size, angle) directly
-to Krita's preset parameters so dynamics are preserved — something GIMP
-cannot do with ABR files.
+The generated preset uses Krita's ``paintbrush`` (pixel brush) engine,
+mapping ABR brush properties (spacing, opacity, flow, size, angle)
+directly to Krita's preset parameters so dynamics are preserved —
+something GIMP cannot do with ABR files.
 """
 
-import io
 import os
 import struct
-import zipfile
 import zlib
-from html import escape as _xml_escape
 from typing import List, Optional, Tuple
 
 from .abr_parser import ABRParser, BrushTip, BrushDynamics
@@ -32,8 +29,9 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
               preset_name: Optional[str] = None) -> None:
     """Write a Krita Preset (.kpp) file from a *BrushTip*.
 
-    The preset embeds the brush tip as a GBR file inside the ZIP so the
-    .kpp is entirely self-contained.
+    The .kpp is a PNG thumbnail with embedded preset XML.  The brush
+    tip ``.gbr`` is referenced by filename (it must exist separately
+    in the ``brushes/`` resource directory).
 
     Parameters
     ----------
@@ -45,21 +43,12 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
         When True, invert the grayscale brush tip before embedding.
     use_pressure : bool
         When True (default), enable pressure sensitivity for brush size.
-        If the ABR contained explicit pressure curves for opacity or flow
-        those are always applied regardless of this flag.
     preset_name : str, optional
-        Override name for the preset.  When ``None`` (default), uses
-        ``tip.name``.  Pass a friendly name here to avoid UUIDs in
-        both the ``preset.xml`` and the embedded ``.gbr`` filename.
+        Override name for the preset.  When ``None``, uses ``tip.name``.
     """
     name = preset_name or tip.name or "Imported Brush"
     safe = _sanitize_filename(name)
     tip_filename = f"{safe}.gbr"
-
-    # --- Brush tip pixel data (grayscale for GBR) ---
-    gray = ABRParser.get_grayscale(tip) if tip.channels > 1 else tip.image_data
-    if invert:
-        gray = bytes(255 - b for b in gray)
 
     # --- Sizing and dynamics ---
     size = float(max(tip.width, tip.height, 1))
@@ -69,44 +58,24 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
     flow = (dyn.flow / 100.0) if dyn else 1.0
     angle = getattr(tip, 'angle', 0) if tip.brush_type == 1 else (dyn.angle if dyn else 0)
 
-    # --- Extended dynamics (properties GIMP cannot preserve) ---
-    # Hardness: use dynamics value if available, otherwise fall back to tip value.
-    hardness = (dyn.hardness / 100.0) if dyn else (tip.hardness / 100.0)
-    # Roundness/ratio: controls the Y/X aspect ratio of the brush tip ellipse.
     ratio = (dyn.roundness / 100.0) if dyn else (tip.roundness / 100.0)
-    # Scatter: Photoshop stores scatter 0–1000 (%); map to 0–10 for Krita.
-    scatter = (dyn.scatter / 1000.0 * 10.0) if dyn else 0.0
-    scatter_count = max(1, dyn.count) if dyn else 1
-    # Size and angle jitter for randomised stroke variation.
-    size_jitter = (dyn.size_jitter / 100.0) if dyn else 0.0
-    angle_jitter = (dyn.angle_jitter / 360.0) if dyn else 0.0
-    # Roundness jitter for random squish variation.
-    roundness_jitter = (dyn.roundness_jitter / 100.0) if dyn else 0.0
-    # Stroke stabiliser.
-    smoothing = dyn.smoothing if dyn else False
 
     # --- Pressure curves ---
-    # Use curves extracted from the ABR descriptor when available.
-    # For size, fall back to a default linear curve when use_pressure is True
-    # so that the brush responds to stylus pressure even without an explicit curve.
     if dyn and dyn.size_pressure_curve:
-        size_pressure_curve: Optional[List[Tuple[float, float]]] = dyn.size_pressure_curve
+        size_curve: Optional[List[Tuple[float, float]]] = dyn.size_pressure_curve
     elif use_pressure:
-        size_pressure_curve = []  # triggers a default linear pressure curve
+        size_curve = [(0.0, 0.0), (1.0, 1.0)]
     else:
-        size_pressure_curve = None
+        size_curve = None
 
-    # Only pass opacity/flow pressure curves when the ABR actually contained data.
-    opacity_pressure_curve: Optional[List[Tuple[float, float]]] = (
+    opacity_curve: Optional[List[Tuple[float, float]]] = (
         dyn.opacity_pressure_curve if (dyn and dyn.opacity_pressure_curve) else None
     )
-    flow_pressure_curve: Optional[List[Tuple[float, float]]] = (
+    flow_curve: Optional[List[Tuple[float, float]]] = (
         dyn.flow_pressure_curve if (dyn and dyn.flow_pressure_curve) else None
     )
 
-    # --- Build components ---
-    gbr_bytes = _make_gbr_bytes(name, tip.width, tip.height, gray, tip.spacing)
-    thumb_bytes = _make_thumbnail(tip, 64)
+    # --- Build XML ---
     preset_xml = _make_preset_xml(
         name=name,
         tip_filename=tip_filename,
@@ -115,245 +84,275 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
         opacity=opacity,
         flow=flow,
         angle=angle,
-        hardness=hardness,
         ratio=ratio,
-        scatter=scatter,
-        scatter_count=scatter_count,
-        size_jitter=size_jitter,
-        angle_jitter=angle_jitter,
-        roundness_jitter=roundness_jitter,
-        smoothing=smoothing,
-        size_pressure_curve=size_pressure_curve,
-        opacity_pressure_curve=opacity_pressure_curve,
-        flow_pressure_curve=flow_pressure_curve,
+        use_pressure=use_pressure,
+        size_curve=size_curve,
+        opacity_curve=opacity_curve,
+        flow_curve=flow_curve,
     )
 
-    # --- Pack into ZIP ---
+    # --- Build PNG with embedded zTXt preset ---
+    png_bytes = _make_kpp_png(tip, invert, preset_xml)
+
     _ensure_dir(filepath)
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_STORED) as zf:
-        zf.writestr("preset.xml", preset_xml.encode("utf-8"))
-        zf.writestr("thumbnail.png", thumb_bytes)
-        zf.writestr(tip_filename, gbr_bytes)
-
     with open(filepath, 'wb') as fh:
-        fh.write(buf.getvalue())
+        fh.write(png_bytes)
 
 
 # ------------------------------------------------------------------ #
-#  XML builder                                                         #
+#  PNG builder — 200×200 RGBA thumbnail with zTXt preset chunk        #
 # ------------------------------------------------------------------ #
 
-def _make_preset_xml(name: str, tip_filename: str, size: float,
-                     spacing: float, opacity: float, flow: float,
-                     angle: int = 0, hardness: float = 1.0,
-                     ratio: float = 1.0, scatter: float = 0.0,
-                     scatter_count: int = 1, size_jitter: float = 0.0,
-                     angle_jitter: float = 0.0, roundness_jitter: float = 0.0,
-                     smoothing: bool = False,
-                     size_pressure_curve: Optional[List[Tuple[float, float]]] = None,
-                     opacity_pressure_curve: Optional[List[Tuple[float, float]]] = None,
-                     flow_pressure_curve: Optional[List[Tuple[float, float]]] = None,
-                     ) -> str:
-    """Return the preset.xml string for a Krita pixel brush preset.
+_THUMB_SIZE = 200
 
-    All parameters beyond *angle* correspond to Photoshop brush dynamics that
-    GIMP's ABR importer discards.  Preserving them here is the key advantage
-    of this importer over a plain GBR export.
 
-    Parameters
-    ----------
-    hardness : float
-        Brush edge hardness (0–1).  Controls the soft-to-hard falloff.
-    ratio : float
-        Y/X aspect ratio of the brush ellipse (0–1).  1.0 = circular.
-    scatter : float
-        Random position offset amount for each dab (0–10).
-    scatter_count : int
-        Number of dabs placed per stamp when scatter is active.
-    size_jitter : float
-        Random size variation per dab (0–1).
-    angle_jitter : float
-        Random angle variation per dab (0–1, where 1 = full 360°).
-    roundness_jitter : float
-        Random roundness/ratio variation per dab (0–1).
-    smoothing : bool
-        Enable Krita's stroke stabiliser (AutoSmoothing).
-    size_pressure_curve : list of (x, y) or empty list or None
-        Pressure→size mapping.  An empty list uses a linear 0→1 curve.
-        None disables the pressure sensor for size entirely.
-    opacity_pressure_curve : list of (x, y) or empty list or None
-        Pressure→opacity mapping.  Same semantics as *size_pressure_curve*.
-    flow_pressure_curve : list of (x, y) or empty list or None
-        Pressure→flow mapping.  Same semantics as *size_pressure_curve*.
-    """
+def _make_kpp_png(tip: BrushTip, invert: bool, preset_xml: str) -> bytes:
+    """Return complete .kpp file bytes (PNG with embedded preset XML)."""
+    rgba = _make_thumbnail_rgba(tip, _THUMB_SIZE, invert)
+    compressed_xml = zlib.compress(preset_xml.encode('utf-8'), 6)
 
-    # The brush_definition is an XML snippet embedded (escaped) inside the
-    # outer XML.  It tells Krita which brush tip file to load and how.
-    brush_def_inner = (
-        f'<BrushPreset autoSpacingCoeff="1" angle="{angle}" '
-        f'brush_style="predefined_brush" diameter="{int(size)}" '
-        f'filename="{_xml_escape(tip_filename)}" '
-        f'name="{_xml_escape(name)}" ratio="{ratio:.4f}" scale="1" '
-        f'spacing="{spacing:.4f}" type="auto_brush">'
-        f'</BrushPreset>'
-    )
-    brush_def_escaped = _xml_escape(brush_def_inner)
+    # Build PNG manually: signature + IHDR + zTXt + IDAT + IEND
+    ihdr_data = struct.pack('>IIBBBBB', _THUMB_SIZE, _THUMB_SIZE,
+                            8, 6, 0, 0, 0)  # 8-bit RGBA
+    # zTXt chunk: keyword(NUL)compression_method(byte)compressed_data
+    ztxt_payload = b'preset\x00\x00' + compressed_xml
 
-    smoothing_str = "true" if smoothing else "false"
-    scatter_random_str = "true" if scatter > 0.0 else "false"
+    # IDAT: raw RGBA rows with filter byte 0 per row
+    raw_rows = bytearray()
+    stride = _THUMB_SIZE * 4
+    for y in range(_THUMB_SIZE):
+        raw_rows.append(0)  # filter: None
+        raw_rows.extend(rgba[y * stride:(y + 1) * stride])
+    idat_data = zlib.compress(bytes(raw_rows), 6)
 
-    xml = (
-        '<!DOCTYPE KritaShapeLayer>\n'
-        f'<params type="KisPaintOpPreset" name="{_xml_escape(name)}" version="5.0">\n'
-        '  <param name="paintopid" type="string">paintbrush</param>\n'
-        f'  <param name="name" type="string">{_xml_escape(name)}</param>\n'
-        '  <param name="preset-icon" type="string">thumbnail.png</param>\n'
-        '  <param name="paintop" type="paintop" id="paintbrush">\n'
-        f'    <param name="brush_definition" type="string">{brush_def_escaped}</param>\n'
-        f'    <param name="Spacing/isAuto" type="bool">false</param>\n'
-        f'    <param name="Spacing/value" type="float">{spacing:.4f}</param>\n'
-        f'    <param name="size" type="float">{size:.1f}</param>\n'
-        f'    <param name="Opacity/value" type="float">{opacity:.4f}</param>\n'
-        f'    <param name="flow" type="float">{flow:.4f}</param>\n'
-        f'    <param name="hardness" type="float">{hardness:.4f}</param>\n'
-        f'    <param name="AutoSmoothing/isChecked" type="bool">{smoothing_str}</param>\n'
-        f'    <param name="Scatter/value" type="float">{scatter:.4f}</param>\n'
-        f'    <param name="Scatter/useRandomOffset" type="bool">{scatter_random_str}</param>\n'
-        f'    <param name="Scatter/count" type="int">{scatter_count}</param>\n'
-        f'    <param name="SizeJitter/value" type="float">{size_jitter:.4f}</param>\n'
-        f'    <param name="AngleJitter/value" type="float">{angle_jitter:.4f}</param>\n'
-        f'    <param name="RoundnessJitter/value" type="float">{roundness_jitter:.4f}</param>\n'
+    return (
+        b'\x89PNG\r\n\x1a\n'
+        + _png_chunk(b'IHDR', ihdr_data)
+        + _png_chunk(b'zTXt', ztxt_payload)
+        + _png_chunk(b'IDAT', idat_data)
+        + _png_chunk(b'IEND', b'')
     )
 
-    # Pressure sensors — each curve gets a useCurve flag and a sensor XML block.
-    for param_prefix, curve in (
-        ('size', size_pressure_curve),
-        ('Opacity', opacity_pressure_curve),
-        ('flow', flow_pressure_curve),
-    ):
-        if curve is not None:
-            sensor_xml = _format_sensor_xml(curve)
-            xml += (
-                f'    <param name="{param_prefix}/useCurve" type="bool">true</param>\n'
-                f'    <param name="{param_prefix}/sensor" type="string">{sensor_xml}</param>\n'
-            )
 
-    xml += (
-        '  </param>\n'
-        '</params>\n'
-    )
-    return xml
+def _png_chunk(tag: bytes, body: bytes) -> bytes:
+    crc = zlib.crc32(tag + body) & 0xFFFFFFFF
+    return struct.pack('>I', len(body)) + tag + body + struct.pack('>I', crc)
 
 
-# ------------------------------------------------------------------ #
-#  GBR data builder (in-memory, no file I/O)                          #
-# ------------------------------------------------------------------ #
-
-def _make_gbr_bytes(name: str, width: int, height: int,
-                    gray: bytes, spacing: int) -> bytes:
-    """Return raw GBR v2 file bytes (for embedding inside the .kpp ZIP)."""
-    name_bytes = name.encode('utf-8') + b'\x00'
-    header_size = 28 + len(name_bytes)
-    header = struct.pack(
-        '>IIIII4sI',
-        header_size,
-        2,                                    # GBR version
-        width,
-        height,
-        1,                                    # bytes per pixel (grayscale)
-        b'GIMP',
-        max(1, min(spacing, 1000)),
-    )
-    pixel_data = gray[:width * height]
-    # Pad if necessary
-    expected = width * height
-    if len(pixel_data) < expected:
-        pixel_data = pixel_data + b'\x00' * (expected - len(pixel_data))
-    return header + name_bytes + pixel_data
-
-
-# ------------------------------------------------------------------ #
-#  Thumbnail builder (minimal PNG, no external deps)                  #
-# ------------------------------------------------------------------ #
-
-def _make_thumbnail(tip: BrushTip, size: int = 64) -> bytes:
-    """Return a PNG-encoded thumbnail of *tip* (size×size, grayscale)."""
-    # Nearest-neighbour scale of the grayscale tip to size×size
+def _make_thumbnail_rgba(tip: BrushTip, size: int, invert: bool) -> bytes:
+    """Return raw RGBA pixel data (size×size×4 bytes) for the thumbnail."""
     src_w, src_h = tip.width, tip.height
     gray_src = ABRParser.get_grayscale(tip) if tip.channels > 1 else tip.image_data
 
     if src_w <= 0 or src_h <= 0 or not gray_src:
-        # Blank white thumbnail
-        raw = b'\xff' * (size * size)
-    else:
-        raw = bytearray(size * size)
-        for dy in range(size):
-            sy = min(int(dy * src_h / size), src_h - 1)
-            for dx in range(size):
-                sx = min(int(dx * src_w / size), src_w - 1)
-                px = gray_src[sy * src_w + sx] if (sy * src_w + sx) < len(gray_src) else 0
-                # Invert: brush data is 0=transparent, 255=opaque stroke
-                # For thumbnail display, show stroke as dark on white.
-                raw[dy * size + dx] = 255 - px
+        return b'\xff\xff\xff\xff' * (size * size)
 
-    return _encode_png_grayscale(bytes(raw), size, size)
+    buf = bytearray(size * size * 4)
+    for dy in range(size):
+        sy = min(int(dy * src_h / size), src_h - 1)
+        for dx in range(size):
+            sx = min(int(dx * src_w / size), src_w - 1)
+            idx = sy * src_w + sx
+            alpha = gray_src[idx] if idx < len(gray_src) else 0
+            if invert:
+                alpha = 255 - alpha
+            # Brush tips: 0 = transparent, 255 = opaque stroke.
+            # Thumbnail: dark stroke on transparent background.
+            off = (dy * size + dx) * 4
+            buf[off] = 0       # R
+            buf[off + 1] = 0   # G
+            buf[off + 2] = 0   # B
+            buf[off + 3] = alpha  # A
+    return bytes(buf)
 
 
-def _encode_png_grayscale(data: bytes, width: int, height: int) -> bytes:
-    """Encode raw 8-bit grayscale pixels to a PNG bytestring."""
-    def _chunk(tag: bytes, body: bytes) -> bytes:
-        crc = zlib.crc32(tag + body) & 0xFFFFFFFF
-        return struct.pack('>I', len(body)) + tag + body + struct.pack('>I', crc)
+# ------------------------------------------------------------------ #
+#  XML builder — Krita 5.x <Preset> format                           #
+# ------------------------------------------------------------------ #
 
-    ihdr = struct.pack('>IIBBBBB', width, height, 8, 0, 0, 0, 0)
+def _make_preset_xml(name: str, tip_filename: str, size: float,
+                     spacing: float, opacity: float, flow: float,
+                     angle: int = 0, ratio: float = 1.0,
+                     use_pressure: bool = True,
+                     size_curve: Optional[List[Tuple[float, float]]] = None,
+                     opacity_curve: Optional[List[Tuple[float, float]]] = None,
+                     flow_curve: Optional[List[Tuple[float, float]]] = None,
+                     ) -> str:
+    """Build Krita 5.x preset XML in the ``<Preset>`` format."""
 
-    rows = bytearray()
-    for y in range(height):
-        rows.append(0)  # filter: None
-        rows.extend(data[y * width:(y + 1) * width])
-
-    return (
-        b'\x89PNG\r\n\x1a\n'
-        + _chunk(b'IHDR', ihdr)
-        + _chunk(b'IDAT', zlib.compress(bytes(rows), 6))
-        + _chunk(b'IEND', b'')
+    # Brush definition — reference the .gbr file via gbr_brush type
+    brush_def = (
+        f'<Brush type="gbr_brush" BrushVersion="2"'
+        f' filename="{_xml_esc(tip_filename)}"'
+        f' spacing="{spacing:.4f}"'
+        f' useAutoSpacing="0" autoSpacingCoeff="1"'
+        f' angle="{angle}" scale="1"'
+        f' ColorAsMask="1" AdjustmentMidPoint="127"'
+        f' BrightnessAdjustment="0" ContrastAdjustment="0"'
+        f' preserveLightness="0"/>'
     )
+
+    # Sensor helper
+    def _sensor(curve_pts=None):
+        if curve_pts:
+            c = ";".join(f"{x},{y}" for x, y in curve_pts) + ";"
+            return f'<!DOCTYPE params> <params id="pressure"> <curve>{c}</curve> </params> '
+        return '<!DOCTYPE params> <params id="pressure"/> '
+
+    default_sensor = _sensor()
+    default_curve_sensor = _sensor([(0, 0), (1, 1)])
+
+    # Size sensor
+    if size_curve:
+        size_sensor = _sensor(size_curve)
+        pressure_size = "true"
+        size_use_curve = "true"
+    else:
+        size_sensor = default_curve_sensor
+        pressure_size = "false"
+        size_use_curve = "false"
+
+    # Opacity sensor
+    if opacity_curve:
+        opacity_sensor = _sensor(opacity_curve)
+        pressure_opacity = "true"
+        opacity_use_curve = "true"
+    else:
+        opacity_sensor = default_curve_sensor
+        pressure_opacity = "false"
+        opacity_use_curve = "false"
+
+    # Flow sensor
+    if flow_curve:
+        flow_sensor = _sensor(flow_curve)
+        pressure_flow = "true"
+        flow_use_curve = "true"
+    else:
+        flow_sensor = default_sensor
+        flow_use_curve = "false"
+        pressure_flow = "false"
+
+    esc_name = _xml_esc(name)
+
+    # Build the full XML with all standard params Krita expects.
+    # Every value is wrapped in CDATA inside a <param type="string"> element.
+    params = [
+        ("ColorSource/Type", "plain"),
+        ("CompositeOp", "normal"),
+        ("EraserMode", "false"),
+        ("FlowSensor", flow_sensor),
+        ("FlowUseCurve", flow_use_curve),
+        ("FlowUseSameCurve", "true"),
+        ("FlowValue", f"{flow:.4f}"),
+        ("FlowcurveMode", "0"),
+        ("HorizontalMirrorEnabled", "false"),
+        ("KisPrecisionOption/AutoPrecisionEnabled", "true"),
+        ("KisPrecisionOption/DeltaValue", "15"),
+        ("KisPrecisionOption/SizeToStartFrom", "10"),
+        ("KisPrecisionOption/precisionLevel", "5"),
+        ("MaskingBrush/Enabled", "false"),
+        ("MirrorSensor", default_sensor),
+        ("MirrorUseCurve", "true"),
+        ("MirrorUseSameCurve", "true"),
+        ("MirrorValue", "1"),
+        ("MirrorcurveMode", "0"),
+        ("OpacitySensor", opacity_sensor),
+        ("OpacityUseCurve", opacity_use_curve),
+        ("OpacityUseSameCurve", "true"),
+        ("OpacityValue", f"{opacity:.4f}"),
+        ("OpacitycurveMode", "0"),
+        ("OpacityVersion", "2"),
+        ("PaintOpAction", "2"),
+        ("PaintOpSettings/ignoreSpacing", "false"),
+        ("PaintOpSettings/isAirbrushing", "false"),
+        ("PaintOpSettings/rate", "20"),
+        ("PaintOpSettings/updateSpacingBetweenDabs", "false"),
+        ("PressureDarken", "false"),
+        ("PressureMirror", "false"),
+        ("PressureMix", "false"),
+        ("PressureRate", "false"),
+        ("PressureRatio", "false"),
+        ("PressureRotation", "false"),
+        ("PressureScatter", "false"),
+        ("PressureSharpness", "false"),
+        ("PressureSize", pressure_size),
+        ("PressureSoftness", "false"),
+        ("PressureSpacing", "false"),
+        ("PressureTexture/Strength/", "false"),
+        ("Pressureh", "false"),
+        ("Pressures", "false"),
+        ("Pressurev", "false"),
+        ("RatioSensor", default_sensor),
+        ("RatioUseCurve", "true"),
+        ("RatioUseSameCurve", "true"),
+        ("RatioValue", f"{ratio:.4f}"),
+        ("RatiocurveMode", "0"),
+        ("RotationSensor", default_sensor),
+        ("RotationUseCurve", "true"),
+        ("RotationUseSameCurve", "true"),
+        ("RotationValue", "1"),
+        ("RotationcurveMode", "0"),
+        ("ScatterSensor", default_sensor),
+        ("ScatterUseCurve", "true"),
+        ("ScatterUseSameCurve", "true"),
+        ("ScatterValue", "5"),
+        ("ScattercurveMode", "0"),
+        ("Scattering/AxisX", "true"),
+        ("Scattering/AxisY", "true"),
+        ("Sharpness/threshold", "4"),
+        ("SharpnessSensor", default_sensor),
+        ("SharpnessUseCurve", "true"),
+        ("SharpnessUseSameCurve", "true"),
+        ("SharpnessValue", "1"),
+        ("SharpnesscurveMode", "0"),
+        ("SizeSensor", size_sensor),
+        ("SizeUseCurve", size_use_curve),
+        ("SizeUseSameCurve", "true"),
+        ("SizeValue", "1"),
+        ("SizecurveMode", "0"),
+        ("SoftnessSensor", default_sensor),
+        ("SoftnessUseCurve", "true"),
+        ("SoftnessUseSameCurve", "true"),
+        ("SoftnessValue", "1"),
+        ("SoftnesscurveMode", "0"),
+        ("Spacing/Isotropic", "false"),
+        ("SpacingSensor", default_sensor),
+        ("SpacingUseCurve", "true"),
+        ("SpacingUseSameCurve", "true"),
+        ("SpacingValue", "1"),
+        ("SpacingcurveMode", "0"),
+        ("Texture/Pattern/Enabled", "false"),
+        ("VerticalMirrorEnabled", "false"),
+        ("brush_definition", brush_def + " "),
+        ("paintop", "paintbrush"),
+        ("requiredBrushFile", tip_filename),
+        ("requiredBrushFilesList", tip_filename),
+    ]
+
+    parts = [f'<Preset name="{esc_name}" paintopid="paintbrush">']
+    for pname, pval in params:
+        parts.append(
+            f' <param name="{pname}" type="string">'
+            f'<![CDATA[{pval}]]></param>'
+        )
+    parts.append(' </Preset>')
+    return " ".join(parts)
 
 
 # ------------------------------------------------------------------ #
 #  Helpers                                                             #
 # ------------------------------------------------------------------ #
 
+def _xml_esc(text: str) -> str:
+    """Escape text for use in XML attribute values."""
+    return (text.replace('&', '&amp;').replace('<', '&lt;')
+                .replace('>', '&gt;').replace('"', '&quot;'))
+
+
 def _sanitize_filename(name: str) -> str:
     safe = "".join(c if c.isalnum() or c in " -_." else "_" for c in name)
     safe = safe.strip().strip(".")
     return safe[:80] if safe else "brush"
-
-
-def _format_sensor_xml(curve: List[Tuple[float, float]]) -> str:
-    """Return Krita sensor XML (XML-escaped) for a pressure curve.
-
-    The inner ``<sensors>`` element is XML-escaped so it can be embedded
-    directly as the text content of a ``<param>`` element.
-
-    Parameters
-    ----------
-    curve : list of (x, y) tuples
-        Normalised pressure→value curve points in the 0–1 range.
-        If empty, a linear curve from (0,0) to (1,1) is used so that the
-        brush fully responds to stylus pressure.
-    """
-    if not curve:
-        curve = [(0.0, 0.0), (1.0, 1.0)]
-    curve_str = ";".join(f"{x:.4f},{y:.4f}" for x, y in curve) + ";"
-    inner = (
-        '<sensors>'
-        f'<sensor active="1" curve="{curve_str}" id="pressure" '
-        'length="-1" name="pressure"/>'
-        '</sensors>'
-    )
-    return _xml_escape(inner)
 
 
 def _ensure_dir(filepath: str) -> None:
