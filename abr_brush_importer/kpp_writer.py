@@ -125,10 +125,18 @@ def _make_kpp_png(tip: BrushTip, invert: bool, preset_xml: str) -> bytes:
         raw_rows.extend(rgba[y * stride:(y + 1) * stride])
     idat_data = zlib.compress(bytes(raw_rows), 6)
 
+    # pHYs: 3780 pixels/meter ≈ 96 DPI (matches Krita's preset files)
+    phys_data = struct.pack('>IIB', 3780, 3780, 1)
+
+    # tEXt version chunk — Krita requires this to accept the preset
+    text_version = b'version\x002.2'
+
     return (
         b'\x89PNG\r\n\x1a\n'
         + _png_chunk(b'IHDR', ihdr_data)
+        + _png_chunk(b'pHYs', phys_data)
         + _png_chunk(b'zTXt', ztxt_payload)
+        + _png_chunk(b'tEXt', text_version)
         + _png_chunk(b'IDAT', idat_data)
         + _png_chunk(b'IEND', b'')
     )

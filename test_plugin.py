@@ -186,8 +186,10 @@ import zlib as _zlib
 with open(kpp_path, 'rb') as f:
     sig = f.read(8)
     assert sig == b'\x89PNG\r\n\x1a\n', "kpp file is not a valid PNG"
-    # Parse chunks to find zTXt
+    # Parse chunks to find zTXt, pHYs, and tEXt version
     found_ztxt = False
+    found_phys = False
+    found_version = False
     while True:
         raw = f.read(8)
         if len(raw) < 8:
@@ -199,6 +201,10 @@ with open(kpp_path, 'rb') as f:
             w, h, bd, ct = struct.unpack('>IIBB', data[:10])
             assert w == 200 and h == 200, f"Expected 200x200, got {w}x{h}"
             assert ct == 6, f"Expected RGBA (ct=6), got {ct}"
+        elif ctype == b'pHYs':
+            ppux, ppuy, unit = struct.unpack('>IIB', data)
+            assert ppux == 3780 and ppuy == 3780, f"Expected 3780 pHYs, got {ppux},{ppuy}"
+            found_phys = True
         elif ctype == b'zTXt':
             null_pos = data.index(0)
             keyword = data[:null_pos].decode('latin-1')
@@ -207,7 +213,16 @@ with open(kpp_path, 'rb') as f:
             assert "paintbrush" in xml_content, "preset XML missing paintop id"
             assert "KPP Test" in xml_content, "preset XML missing brush name"
             found_ztxt = True
+        elif ctype == b'tEXt':
+            null_pos = data.index(0)
+            keyword = data[:null_pos].decode('latin-1')
+            value = data[null_pos+1:].decode('latin-1')
+            if keyword == 'version':
+                assert value == '2.2', f"Expected version 2.2, got {value}"
+                found_version = True
     assert found_ztxt, "No zTXt chunk found in .kpp PNG"
+    assert found_phys, "No pHYs chunk found in .kpp PNG"
+    assert found_version, "No tEXt version chunk found in .kpp PNG"
 
 print(f"write_kpp: OK (PNG with zTXt preset)")
 
