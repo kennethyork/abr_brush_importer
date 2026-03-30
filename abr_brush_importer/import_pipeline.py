@@ -21,7 +21,7 @@ from .bundle_writer import write_bundle
 from .gbr_writer import write_gbr, write_png
 from .kpp_writer import write_kpp
 from .krita_resource_db import register_resources
-from .utils import (_sanitize, _unique, _choose_format,
+from .utils import (_sanitize, _unique, _choose_format, _friendly_name,
                    brushes_dest, patterns_dest, paintoppresets_dest)
 
 
@@ -150,7 +150,7 @@ def import_abr_files(
 
         # ── Write brushes ─────────────────────────────────────────
         for idx, tip in enumerate(brushes):
-            safe_name = _sanitize(tip.name or f"brush_{idx}")
+            safe_name = _friendly_name(tip.name, idx, abr_path)
             ch = tip.channels
             pixels = tip.image_data
             if options.invert and ch == 1:

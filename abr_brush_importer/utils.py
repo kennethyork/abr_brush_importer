@@ -5,8 +5,15 @@ can be exercised in a plain Python test environment.
 """
 
 import os
+import re
 
 from .abr_parser import BrushTip
+
+# Pattern matching UUID-like brush names (e.g. $ace673b1-0610-11e6-...)
+_UUID_RE = re.compile(
+    r'^[\$_]?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+    re.IGNORECASE,
+)
 
 
 # ------------------------------------------------------------------ #
@@ -18,6 +25,19 @@ def _sanitize(name: str) -> str:
     safe = "".join(c if c.isalnum() or c in " -_." else "_" for c in name)
     safe = safe.strip().strip(".")
     return safe[:100] if safe else "brush"
+
+
+def _friendly_name(tip_name: str, idx: int, abr_path: str) -> str:
+    """Return a human-readable brush name.
+
+    If *tip_name* is a UUID (common in VMA-format ABR files), derive
+    the name from the ABR filename + a 1-based index instead.
+    E.g. ``"20 Smoke Brushes"`` → ``"20 Smoke Brushes 01"``.
+    """
+    if tip_name and not _UUID_RE.match(tip_name):
+        return _sanitize(tip_name)
+    stem = os.path.splitext(os.path.basename(abr_path))[0]
+    return _sanitize(f"{stem} {idx + 1:02d}")
 
 
 def _unique(path: str) -> str:

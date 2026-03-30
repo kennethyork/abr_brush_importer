@@ -29,7 +29,7 @@ from .bundle_writer import write_bundle
 from .gbr_writer import write_gbr, write_png
 from .kpp_writer import write_kpp
 from .krita_resource_db import register_resources
-from .utils import _sanitize, _unique, _choose_format, brushes_dest, patterns_dest, paintoppresets_dest
+from .utils import _sanitize, _unique, _choose_format, _friendly_name, brushes_dest, patterns_dest, paintoppresets_dest
 from .auto_import import AutoImportSettings, scan_and_import
 from .import_db import ImportDB
 from .import_pipeline import ImportOptions
@@ -639,11 +639,13 @@ class ABRImporterDialog(QDialog):
         written_preset_files: list = []
         written_pattern_files: list = []
 
+        abr_path = self.file_label.text()
+
         for i, item in enumerate(selected):
             idx = item.data(Qt.UserRole)
             tip = self.brushes[idx]
 
-            safe_name = _sanitize(tip.name or f"brush_{idx}")
+            safe_name = _friendly_name(tip.name, idx, abr_path)
             pixels = tip.image_data
             ch = tip.channels
             if invert and ch == 1:
