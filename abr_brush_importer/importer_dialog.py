@@ -28,6 +28,7 @@ from .abr_parser import ABRParser, BrushTip, BrushPattern
 from .bundle_writer import write_bundle
 from .gbr_writer import write_gbr, write_png
 from .kpp_writer import write_kpp
+from .krita_resource_db import register_resources
 from .utils import _sanitize, _unique, _choose_format, brushes_dest, patterns_dest, paintoppresets_dest
 from .auto_import import AutoImportSettings, scan_and_import
 from .import_db import ImportDB
@@ -704,6 +705,13 @@ class ABRImporterDialog(QDialog):
                     pat_errors.append(f"{pat.name}: {exc}")
 
         self.progress.setVisible(False)
+
+        # Register presets in Krita's resource database
+        if written_preset_files:
+            try:
+                register_resources(self.resource_dir, written_preset_files, "paintoppresets")
+            except Exception:
+                pass
 
         # Generate .bundle file so Krita picks up brushes reliably
         bundle_path = ""

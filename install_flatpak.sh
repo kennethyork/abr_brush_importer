@@ -34,6 +34,7 @@ cp abr_brush_importer/import_db.py       "$KRITA_PYKRITA/abr_brush_importer/"
 cp abr_brush_importer/import_pipeline.py "$KRITA_PYKRITA/abr_brush_importer/"
 cp abr_brush_importer/importer_dialog.py "$KRITA_PYKRITA/abr_brush_importer/"
 cp abr_brush_importer/kpp_writer.py      "$KRITA_PYKRITA/abr_brush_importer/"
+cp abr_brush_importer/krita_resource_db.py "$KRITA_PYKRITA/abr_brush_importer/"
 cp abr_brush_importer/net_utils.py       "$KRITA_PYKRITA/abr_brush_importer/"
 cp abr_brush_importer/utils.py           "$KRITA_PYKRITA/abr_brush_importer/"
 

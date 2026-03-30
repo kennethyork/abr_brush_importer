@@ -20,6 +20,7 @@ from .abr_parser import ABRParser
 from .bundle_writer import write_bundle
 from .gbr_writer import write_gbr, write_png
 from .kpp_writer import write_kpp
+from .krita_resource_db import register_resources
 from .utils import (_sanitize, _unique, _choose_format,
                    brushes_dest, patterns_dest, paintoppresets_dest)
 
@@ -217,6 +218,13 @@ def import_abr_files(
         if db is not None:
             error_summary = "; ".join(file_errors) if file_errors else None
             db.mark_imported(abr_path, error=error_summary)
+
+    # ── Register presets in Krita's resource database ─────────
+    if written_preset_files:
+        try:
+            register_resources(resource_dir, written_preset_files, "paintoppresets")
+        except Exception:
+            pass
 
     # ── Generate .bundle file ─────────────────────────────────────
     if result.imported > 0 and (written_brush_files or written_preset_files):
