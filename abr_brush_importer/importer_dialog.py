@@ -768,6 +768,15 @@ class ABRImporterDialog(QDialog):
                             shutil.copy2(bundle_path, dst_bundle)
                         except OSError:
                             pass
+                # Register replicated presets in extra dir's resource DB
+                try:
+                    extra_presets = [
+                        os.path.join(paintoppresets_dest(extra_dir), os.path.basename(p))
+                        for p in written_preset_files
+                    ]
+                    register_resources(extra_dir, extra_presets, "paintoppresets")
+                except Exception:
+                    pass
             if self.patterns_check.isChecked() and self.patterns:
                 src_pats = patterns_dest(self.resource_dir)
                 for extra_dir in self.extra_resource_dirs:

@@ -280,6 +280,15 @@ def import_abr_files(
                             shutil.copy2(src_file, dst_file)
                         except OSError:
                             pass
+            # Register replicated presets in extra dir's resource DB
+            try:
+                extra_presets = [
+                    os.path.join(paintoppresets_dest(extra_dir), os.path.basename(p))
+                    for p in written_preset_files
+                ]
+                register_resources(extra_dir, extra_presets, "paintoppresets")
+            except Exception:
+                pass
 
     # ── Refresh Krita resources ───────────────────────────────────
     if options.auto_refresh and result.imported > 0:
