@@ -51,7 +51,7 @@ def _auto_install_krita_plugin():
             continue
         marker = os.path.join(krita_dir, "pykrita", "abr_brush_importer",
                               ".installed_version")
-        current_version = "1.0.1"
+        current_version = "1.0.2"
         if os.path.isfile(marker):
             try:
                 with open(marker) as f:

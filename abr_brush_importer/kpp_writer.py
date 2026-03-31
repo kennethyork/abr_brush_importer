@@ -156,6 +156,7 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
     texture_pattern = dyn.texture_pattern_name if dyn else ""
     texture_scale = (dyn.texture_scale / 100.0) if dyn else 1.0
     texture_depth = (dyn.texture_depth / 100.0) if dyn else 1.0
+    texture_mode = dyn.texture_mode if dyn else ""
 
     # --- Masking brush (dual brush) ---
     masking_enabled = dyn.dual_brush_enabled if dyn else False
@@ -295,6 +296,7 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
         texture_pattern_file=texture_pattern_file,
         texture_scale=texture_scale,
         texture_depth=texture_depth,
+        texture_mode=texture_mode,
         masking_enabled=masking_enabled,
         masking_composite=masking_composite,
         masking_tip_filename=masking_tip,
@@ -422,6 +424,7 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
                      texture_pattern_file: str = "",
                      texture_scale: float = 1.0,
                      texture_depth: float = 1.0,
+                     texture_mode: str = "",
                      masking_enabled: bool = False,
                      masking_composite: str = "multiply",
                      masking_tip_filename: str = "",
@@ -762,7 +765,8 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
             ("Texture/Strength/Sensor", default_sensor),
             ("Texture/Strength/UseCurve", "true"),
             ("Texture/Strength/Value", f"{texture_depth:.4f}"),
-            ("Texture/Mode", "0"),
+            ("Texture/Mode", str(_map_ps_texture_mode(texture_mode))),
+            ("Texture/SoftTexturing", "true"),
         ])
         params.extend(tex_params)
 
@@ -1060,6 +1064,39 @@ def _xml_esc(text: str) -> str:
     """Escape text for use in XML attribute values."""
     return (text.replace('&', '&amp;').replace('<', '&lt;')
                 .replace('>', '&gt;').replace('"', '&quot;'))
+
+
+def _map_ps_texture_mode(ps_mode: str) -> int:
+    """Map a Photoshop texture blend mode string to Krita's integer Texture/Mode.
+
+    Krita 5.x texture mode integers:
+      0=Multiply, 1=Subtract, 2=LightnessMap, 3=GradientMap,
+      4=Darken, 5=Overlay, 6=ColorDodge, 7=Burn, 8=LinearDodge,
+      9=LinearBurn, 10=HardMix(PS), 11=HardMixSofter(PS),
+      12=Height, 13=LinearHeight, 14=Height(PS), 15=LinearHeight(PS)
+    """
+    _map = {
+        "multiply": 0,
+        "darken": 4,
+        "colorBurn": 7,
+        "linearBurn": 9,
+        "lighten": 8,       # no direct match → LinearDodge closest
+        "screen": 8,        # → LinearDodge
+        "colorDodge": 6,
+        "linearDodge": 8,
+        "overlay": 5,
+        "softLight": 5,     # → Overlay closest
+        "hardLight": 10,    # → HardMix(PS)
+        "vividLight": 10,   # → HardMix(PS)
+        "linearLight": 8,   # → LinearDodge
+        "pinLight": 6,      # → ColorDodge closest
+        "hardMix": 10,      # → HardMix(PS)
+        "subtract": 1,
+        "difference": 1,    # → Subtract closest
+        "exclusion": 1,     # → Subtract closest
+        "height": 14,       # → Height(PS)
+    }
+    return _map.get(ps_mode, 0)
 
 
 def _resolve_pattern_filename(pattern_name: str) -> str:
