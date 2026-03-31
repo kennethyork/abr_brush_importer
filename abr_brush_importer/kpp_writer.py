@@ -116,6 +116,45 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
 
     # --- Masking brush (dual brush) ---
     masking_enabled = dyn.dual_brush_enabled if dyn else False
+    masking_composite = "multiply"
+    masking_scatter = 0.0
+    masking_scatter_both = False
+    masking_spacing = 0.25
+    masking_flip = False
+    masking_ratio = 1.0
+    masking_angle = 0
+    if dyn and dyn.dual_brush_enabled:
+        # Map PS blend mode → Krita composite op
+        _mode_map = {
+            "multiply": "multiply", "darken": "darken",
+            "colorBurn": "burn", "linearBurn": "linear_burn",
+            "lighten": "lighten", "screen": "screen",
+            "colorDodge": "dodge", "linearDodge": "linear_dodge",
+            "overlay": "overlay", "softLight": "soft_light",
+            "hardLight": "hard_light", "vividLight": "vivid_light",
+            "linearLight": "linear_light", "pinLight": "pin_light",
+            "hardMix": "hard_mix", "difference": "diff",
+            "exclusion": "exclusion", "subtract": "subtract",
+            "divide": "divide",
+        }
+        masking_composite = _mode_map.get(dyn.dual_brush_mode, "multiply")
+        masking_scatter = dyn.dual_brush_scatter / 100.0
+        masking_scatter_both = dyn.dual_brush_scatter > 0
+        masking_spacing = max(0.01, dyn.dual_brush_spacing / 100.0)
+        masking_flip = dyn.dual_brush_flip
+        masking_ratio = dyn.dual_brush_roundness / 100.0
+        masking_angle = dyn.dual_brush_angle
+
+    # --- Noise → texture overlay fallback ---
+    noise = dyn.noise if dyn else False
+    if noise and not texture_enabled:
+        texture_enabled = True
+        texture_scale = 0.15   # fine grain
+        texture_depth = 0.30   # subtle
+        texture_pattern = ""   # use default; no specific pattern
+
+    # --- Wet edges → softness + darken edge simulation ---
+    wet_edges = dyn.wet_edges if dyn else False
 
     # --- Build XML ---
     preset_xml = _make_preset_xml(
@@ -149,6 +188,15 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
         texture_scale=texture_scale,
         texture_depth=texture_depth,
         masking_enabled=masking_enabled,
+        masking_composite=masking_composite,
+        masking_tip_filename=tip_filename,
+        masking_scatter=masking_scatter,
+        masking_scatter_both=masking_scatter_both,
+        masking_spacing=masking_spacing,
+        masking_flip=masking_flip,
+        masking_ratio=masking_ratio,
+        masking_angle=masking_angle,
+        wet_edges=wet_edges,
     )
 
     # --- Build PNG with embedded zTXt preset ---
@@ -263,6 +311,15 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
                      texture_scale: float = 1.0,
                      texture_depth: float = 1.0,
                      masking_enabled: bool = False,
+                     masking_composite: str = "multiply",
+                     masking_tip_filename: str = "",
+                     masking_scatter: float = 0.0,
+                     masking_scatter_both: bool = False,
+                     masking_spacing: float = 0.25,
+                     masking_flip: bool = False,
+                     masking_ratio: float = 1.0,
+                     masking_angle: int = 0,
+                     wet_edges: bool = False,
                      ) -> str:
     """Build Krita 5.x preset XML in the ``<Preset>`` format."""
 
@@ -400,11 +457,11 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
         ("Customh", "true"),
         ("Customs", "true"),
         ("Customv", "true"),
-        # Darken sensor group
+        # Darken sensor group — wet edges → darken at edges for buildup
         ("DarkenSensor", default_sensor),
         ("DarkenUseCurve", "true"),
         ("DarkenUseSameCurve", "true"),
-        ("DarkenValue", "1"),
+        ("DarkenValue", "0.85" if wet_edges else "1"),
         ("EraserMode", "false"),
         # Flow sensor group
         ("FlowSensor", flow_sensor),
@@ -418,8 +475,73 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
         ("KisPrecisionOption/DeltaValue", smoothing_delta),
         ("KisPrecisionOption/SizeToStartFrom", "10"),
         ("KisPrecisionOption/precisionLevel", smoothing_level),
-        # Masking brush (dual brush)
+        # Masking brush (dual brush) — full preset when enabled
         ("MaskingBrush/Enabled", "true" if masking_enabled else "false"),
+    ]
+
+    if masking_enabled and masking_tip_filename:
+        # Build the masking brush definition referencing the same GBR tip
+        mask_brush_def = (
+            f'<Brush type="gbr_brush" BrushVersion="2"'
+            f' filename="{_xml_esc(masking_tip_filename)}"'
+            f' spacing="{masking_spacing:.4f}"'
+            f' useAutoSpacing="0" autoSpacingCoeff="1"'
+            f' angle="{masking_angle}" scale="1"'
+            f' ColorAsMask="1" AdjustmentMidPoint="127"'
+            f' BrightnessAdjustment="0" ContrastAdjustment="0"'
+            f' preserveLightness="0"/>'
+        )
+        mask_mirror = _sensor("random") if masking_flip else _sensor("pressure")
+        mask_scatter_val = f"{masking_scatter:.4f}" if masking_scatter > 0 else "0"
+        params.extend([
+            ("MaskingBrush/MaskingCompositeOp", masking_composite),
+            ("MaskingBrush/MasterSizeCoeff", "1"),
+            ("MaskingBrush/Preset/FlowSensor", default_sensor),
+            ("MaskingBrush/Preset/FlowUseCurve", "false"),
+            ("MaskingBrush/Preset/FlowUseSameCurve", "true"),
+            ("MaskingBrush/Preset/FlowValue", "1"),
+            ("MaskingBrush/Preset/HorizontalMirrorEnabled",
+             "true" if masking_flip else "false"),
+            ("MaskingBrush/Preset/MirrorSensor", mask_mirror),
+            ("MaskingBrush/Preset/MirrorUseCurve", "true"),
+            ("MaskingBrush/Preset/MirrorUseSameCurve", "true"),
+            ("MaskingBrush/Preset/MirrorValue", "1"),
+            ("MaskingBrush/Preset/OpacitySensor", default_sensor),
+            ("MaskingBrush/Preset/OpacityUseCurve", "false"),
+            ("MaskingBrush/Preset/OpacityUseSameCurve", "true"),
+            ("MaskingBrush/Preset/OpacityValue", "1"),
+            ("MaskingBrush/Preset/PressureMirror", "false"),
+            ("MaskingBrush/Preset/PressureRatio", "false"),
+            ("MaskingBrush/Preset/PressureRotation", "false"),
+            ("MaskingBrush/Preset/PressureScatter", "false"),
+            ("MaskingBrush/Preset/PressureSize", "false"),
+            ("MaskingBrush/Preset/RatioSensor", _sensor("pressure")),
+            ("MaskingBrush/Preset/RatioUseCurve", "true"),
+            ("MaskingBrush/Preset/RatioUseSameCurve", "true"),
+            ("MaskingBrush/Preset/RatioValue", f"{masking_ratio:.4f}"),
+            ("MaskingBrush/Preset/RotationSensor", _sensor("pressure")),
+            ("MaskingBrush/Preset/RotationUseCurve", "true"),
+            ("MaskingBrush/Preset/RotationUseSameCurve", "true"),
+            ("MaskingBrush/Preset/RotationValue", "1"),
+            ("MaskingBrush/Preset/ScatterSensor", default_sensor),
+            ("MaskingBrush/Preset/ScatterUseCurve",
+             "true" if masking_scatter > 0 else "false"),
+            ("MaskingBrush/Preset/ScatterUseSameCurve", "true"),
+            ("MaskingBrush/Preset/ScatterValue", mask_scatter_val),
+            ("MaskingBrush/Preset/Scattering/AxisX", "true"),
+            ("MaskingBrush/Preset/Scattering/AxisY",
+             "true" if masking_scatter_both else "false"),
+            ("MaskingBrush/Preset/SizeSensor", default_sensor),
+            ("MaskingBrush/Preset/SizeUseCurve", "false"),
+            ("MaskingBrush/Preset/SizeUseSameCurve", "true"),
+            ("MaskingBrush/Preset/SizeValue", "1"),
+            ("MaskingBrush/Preset/VerticalMirrorEnabled", "false"),
+            ("MaskingBrush/Preset/brush_definition", mask_brush_def + " "),
+            ("MaskingBrush/Preset/requiredBrushFile", masking_tip_filename),
+            ("MaskingBrush/UseMasterSize", "true"),
+        ])
+
+    params.extend([
         # Mirror sensor group (per-dab flip via random sensor)
         ("MirrorSensor", mirror_sensor),
         ("MirrorUseCurve", "true"),
@@ -485,11 +607,11 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
         ("SizeUseCurve", size_use_curve),
         ("SizeUseSameCurve", "true"),
         ("SizeValue", "1"),
-        # Softness sensor group
+        # Softness sensor group — wet edges → reduced softness for edge buildup
         ("SoftnessSensor", default_sensor),
         ("SoftnessUseCurve", "true"),
         ("SoftnessUseSameCurve", "true"),
-        ("SoftnessValue", "1"),
+        ("SoftnessValue", "0.5" if wet_edges else "1"),
         # Spacing sensor group
         ("Spacing/Isotropic", "false"),
         ("SpacingSensor", default_sensor),
@@ -498,7 +620,7 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
         ("SpacingValue", "1"),
         # Texture overlay
         ("Texture/Pattern/Enabled", "true" if texture_enabled else "false"),
-    ]
+    ])
 
     # Add texture params when enabled
     if texture_enabled:

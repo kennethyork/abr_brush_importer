@@ -47,6 +47,15 @@ class BrushDynamics:
     flow_pressure_curve: List[Tuple[float, float]] = field(default_factory=list)
     dual_brush_enabled: bool = False
     dual_brush_tip_index: int = -1
+    dual_brush_diameter: int = 0
+    dual_brush_spacing: int = 25
+    dual_brush_scatter: int = 0
+    dual_brush_count: int = 1
+    dual_brush_mode: str = "multiply"  # PS blend mode
+    dual_brush_flip: bool = False
+    dual_brush_roundness: int = 100
+    dual_brush_angle: int = 0
+    dual_brush_hardness: int = 100
     wet_edges: bool = False
     noise: bool = False
     smoothing: bool = False
@@ -390,6 +399,31 @@ class ABRParser:
         dual = desc.get('DlBr', {})
         if isinstance(dual, dict) and dual:
             dyn.dual_brush_enabled = True
+            val = self._desc_get_num(dual, 'Dmtr')
+            if val is not None:
+                dyn.dual_brush_diameter = max(1, int(val))
+            val = self._desc_get_num(dual, 'Spcn')
+            if val is not None:
+                dyn.dual_brush_spacing = max(1, min(1000, int(val)))
+            val = self._desc_get_num(dual, 'Sctr')
+            if val is not None:
+                dyn.dual_brush_scatter = max(0, int(val))
+            val = self._desc_get_num(dual, 'Cnt ')
+            if val is not None:
+                dyn.dual_brush_count = max(1, int(val))
+            mode = dual.get('Md  ', {})
+            if isinstance(mode, dict):
+                dyn.dual_brush_mode = str(mode.get('value', 'multiply'))
+            dyn.dual_brush_flip = bool(dual.get('flipX', False))
+            val = self._desc_get_num(dual, 'Rndn')
+            if val is not None:
+                dyn.dual_brush_roundness = max(0, min(100, int(val)))
+            val = self._desc_get_num(dual, 'Angl')
+            if val is not None:
+                dyn.dual_brush_angle = int(val)
+            val = self._desc_get_num(dual, 'Hrdn')
+            if val is not None:
+                dyn.dual_brush_hardness = max(0, min(100, int(val)))
 
         # Color dynamics
         color_dyn = desc.get('ClrD', {})

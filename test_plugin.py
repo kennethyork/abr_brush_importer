@@ -352,11 +352,60 @@ assert 'vSensor' in xf, "Missing vSensor"
 # Texture
 assert 'Texture/Pattern/Enabled' in xf, "Missing texture enabled"
 assert 'Texture/Pattern/Scale' in xf, "Missing texture scale"
-# Masking brush (dual brush)
+# Masking brush (dual brush) — full preset
 assert 'MaskingBrush/Enabled' in xf, "Missing masking brush"
+assert 'MaskingBrush/MaskingCompositeOp' in xf, "Missing masking composite op"
+assert 'MaskingBrush/Preset/brush_definition' in xf, "Missing masking brush definition"
+assert 'MaskingBrush/Preset/requiredBrushFile' in xf, "Missing masking required brush"
+assert 'MaskingBrush/UseMasterSize' in xf, "Missing masking master size"
+assert 'MaskingBrush/Preset/ScatterValue' in xf, "Missing masking scatter"
 # Size/rotation/ratio jitter → random sensors
 assert xf.count('id="random"') >= 3, "Need random sensors for jitter (size+angle+ratio)"
 print("write_kpp all dynamics features: OK")
+
+# ── 16d) Test noise → texture fallback ──
+noise_tip = BrushTip(name="Noisy", width=8, height=8, channels=1,
+                     image_data=bytes([128] * 64), spacing=25)
+noise_tip.dynamics = BrushDynamics(spacing=25, noise=True)
+kpp_noise = os.path.join(tmp2, "test_noise.kpp")
+write_kpp(kpp_noise, noise_tip)
+xn = _extract_kpp_xml(kpp_noise)
+assert 'Texture/Pattern/Enabled' in xn, "Noise should enable texture"
+assert 'true' in xn[xn.find('Texture/Pattern/Enabled'):xn.find('Texture/Pattern/Enabled')+80], \
+    "Noise should set texture enabled=true"
+assert 'Texture/Pattern/Scale' in xn, "Noise should set texture scale"
+print("write_kpp noise → texture fallback: OK")
+
+# ── 16e) Test wet edges → darken/softness ──
+wet_tip = BrushTip(name="WetEdge", width=8, height=8, channels=1,
+                   image_data=bytes([128] * 64), spacing=25)
+wet_tip.dynamics = BrushDynamics(spacing=25, wet_edges=True)
+kpp_wet = os.path.join(tmp2, "test_wet.kpp")
+write_kpp(kpp_wet, wet_tip)
+xw = _extract_kpp_xml(kpp_wet)
+assert 'DarkenValue' in xw, "Missing DarkenValue"
+assert '0.85' in xw, "Wet edges should set DarkenValue=0.85"
+assert 'SoftnessValue' in xw, "Missing SoftnessValue"
+assert '0.5' in xw, "Wet edges should set SoftnessValue=0.5"
+print("write_kpp wet edges: OK")
+
+# ── 16f) Test dual brush parser fields ──
+dual_dyn = BrushDynamics(
+    spacing=25,
+    dual_brush_enabled=True,
+    dual_brush_diameter=50,
+    dual_brush_spacing=30,
+    dual_brush_scatter=200,
+    dual_brush_count=3,
+    dual_brush_mode="multiply",
+    dual_brush_flip=True,
+    dual_brush_roundness=75,
+    dual_brush_angle=45,
+)
+assert dual_dyn.dual_brush_diameter == 50
+assert dual_dyn.dual_brush_scatter == 200
+assert dual_dyn.dual_brush_flip is True
+print("write_kpp dual brush parser fields: OK")
 
 # ── 17) Test write_kpp with invert ──
 inv_tip = BrushTip(name="Inverted", width=4, height=4, channels=1,
