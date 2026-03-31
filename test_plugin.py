@@ -564,6 +564,54 @@ assert 'true' in xs[xs.find('MaskingBrush/Enabled'):xs.find('MaskingBrush/Enable
 shutil.rmtree(tmp_dual_pipe)
 print("sampled dual brush pipeline: OK")
 
+# ── 16p) Test write_kpp colorsmudge "smudge" mode (gouache/oil) ──
+smudge_tip = BrushTip(name="Gouache Test", width=16, height=16, channels=1,
+                      image_data=bytes([180] * 256), spacing=25)
+kpp_smudge = os.path.join(tmp2, "test_smudge.kpp")
+write_kpp(kpp_smudge, smudge_tip, invert=True, use_pressure=True,
+          paint_mode="smudge")
+xs = _extract_kpp_xml(kpp_smudge)
+assert 'paintopid="colorsmudge"' in xs, "smudge mode should use colorsmudge engine"
+assert 'SmudgeRateValue' in xs, "smudge mode missing SmudgeRateValue"
+assert 'ColorRateValue' in xs, "smudge mode missing ColorRateValue"
+# Gouache: ColorRateValue should be 1 (full opaque colour)
+cri = xs.find('ColorRateValue')
+assert '1' in xs[cri:cri+80], "smudge mode ColorRateValue should be 1"
+assert 'SmudgeRadiusValue' in xs, "smudge mode missing SmudgeRadiusValue"
+assert 'Gouache Test.gbr' in xs, "smudge mode tip filename not in XML"
+print("colorsmudge smudge mode (gouache): OK")
+
+# ── 16q) Test write_kpp colorsmudge "wash" mode (watercolour) ──
+wash_tip = BrushTip(name="Watercolour Test", width=16, height=16, channels=1,
+                    image_data=bytes([120] * 256), spacing=25)
+kpp_wash = os.path.join(tmp2, "test_wash.kpp")
+write_kpp(kpp_wash, wash_tip, invert=True, use_pressure=True,
+          paint_mode="wash")
+xw = _extract_kpp_xml(kpp_wash)
+assert 'paintopid="colorsmudge"' in xw, "wash mode should use colorsmudge engine"
+# Watercolour: ColorRateValue should be 0.5 (translucent)
+crw = xw.find('ColorRateValue')
+assert '0.5' in xw[crw:crw+80], "wash mode ColorRateValue should be 0.5"
+print("colorsmudge wash mode (watercolour): OK")
+
+# ── 16r) Test write_kpp paint_mode=None falls back to paintbrush ──
+kpp_pixel = os.path.join(tmp2, "test_pixel_default.kpp")
+write_kpp(kpp_pixel, smudge_tip, paint_mode=None)
+xp = _extract_kpp_xml(kpp_pixel)
+assert 'paintopid="paintbrush"' in xp, "None paint_mode should use paintbrush"
+assert 'SmudgeRate' not in xp, "paintbrush mode should not have SmudgeRate"
+print("paint_mode=None → paintbrush: OK")
+
+# ── 16s) Test colorsmudge with no dynamics (typical ABR stamp brush) ──
+bare_tip = BrushTip(name="Bare Stamp", width=32, height=32, channels=1,
+                    image_data=bytes([200] * 1024), spacing=50)
+kpp_bare = os.path.join(tmp2, "test_bare_smudge.kpp")
+write_kpp(kpp_bare, bare_tip, paint_mode="smudge")
+xb = _extract_kpp_xml(kpp_bare)
+assert 'paintopid="colorsmudge"' in xb, "bare tip smudge should use colorsmudge"
+assert 'Bare Stamp.gbr' in xb, "bare tip filename not in coloursmudge XML"
+print("colorsmudge bare stamp brush: OK")
+
 # ── 17) Test write_kpp with invert ──
 inv_tip = BrushTip(name="Inverted", width=4, height=4, channels=1,
                    image_data=bytes([100] * 16), spacing=25)

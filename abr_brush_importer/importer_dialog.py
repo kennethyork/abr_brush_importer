@@ -19,7 +19,7 @@ from PyQt5.QtWidgets import (
     QListWidget, QListWidgetItem, QFileDialog, QCheckBox,
     QProgressBar, QGroupBox, QMessageBox, QSplitter,
     QAbstractItemView, QRadioButton, QButtonGroup, QWidget,
-    QLineEdit,
+    QLineEdit, QComboBox,
 )
 from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QImage, QPixmap, QIcon
@@ -267,6 +267,19 @@ class ABRImporterDialog(QDialog):
         )
         self.pressure_check.setChecked(True)
         opts_lay.addWidget(self.pressure_check)
+
+        # Paint engine mode — colorsmudge for wet/mixing behaviour
+        engine_row = QHBoxLayout()
+        engine_label = QLabel("Paint engine:")
+        self.engine_combo = QComboBox()
+        self.engine_combo.addItem("Pixel brush (standard)", "pixel")
+        self.engine_combo.addItem("Gouache / Oil (paint mixing)", "smudge")
+        self.engine_combo.addItem("Watercolour (translucent washes)", "wash")
+        engine_row.addWidget(engine_label)
+        engine_row.addWidget(self.engine_combo)
+        engine_row.addStretch()
+        opts_lay.addLayout(engine_row)
+
         root.addWidget(opts_box)
 
         # ── Auto Import ──
@@ -628,6 +641,9 @@ class ABRImporterDialog(QDialog):
 
         invert = self.invert_check.isChecked()
         use_pressure = self.pressure_check.isChecked()
+        paint_mode = self.engine_combo.currentData()
+        if paint_mode == "pixel":
+            paint_mode = None
 
         self.progress.setVisible(True)
         self.progress.setRange(0, len(selected))
@@ -655,7 +671,7 @@ class ABRImporterDialog(QDialog):
                 # Always write a .kpp preset to paintoppresets/
                 kpp_path = _unique(os.path.join(presets_dir, f"{safe_name}.kpp"))
                 write_kpp(kpp_path, tip, invert=invert, use_pressure=use_pressure,
-                          preset_name=safe_name)
+                          preset_name=safe_name, paint_mode=paint_mode)
                 written_preset_files.append(kpp_path)
 
                 # Also write brush tip (.gbr) to brushes/

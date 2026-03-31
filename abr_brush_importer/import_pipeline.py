@@ -57,6 +57,7 @@ class ImportOptions:
     use_pressure: bool = True
     export_patterns: bool = True
     auto_refresh: bool = True
+    paint_mode: Optional[str] = None
 
 
 @dataclass
@@ -230,6 +231,7 @@ def import_abr_files(
                     use_pressure=options.use_pressure,
                     preset_name=safe_name,
                     masking_tip_override=masking_tip_file,
+                    paint_mode=options.paint_mode,
                 )
                 written_preset_files.append(kpp_path)
 

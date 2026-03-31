@@ -6,10 +6,17 @@ A Krita 5.x .kpp file is a **PNG image** (200×200 thumbnail) with a
 preset settings.  The brush tip itself lives as a separate ``.gbr``
 file in ``brushes/`` and is referenced by filename inside the XML.
 
-The generated preset uses Krita's ``paintbrush`` (pixel brush) engine,
-mapping ABR brush properties (spacing, opacity, flow, size, angle)
-directly to Krita's preset parameters so dynamics are preserved —
-something GIMP cannot do with ABR files.
+Two paint engines are supported:
+
+* ``paintbrush`` — the default pixel brush engine.  Maps ABR brush
+  properties (spacing, opacity, flow, size, angle) directly to Krita's
+  preset parameters so dynamics are preserved — something GIMP cannot
+  do with ABR files.
+
+* ``colorsmudge`` — Krita's colour-smudge engine.  Produces presets
+  where paint mixes on the canvas, giving gouache / oil / watercolour
+  behaviour.  Pass ``paint_mode="wash"`` for translucent watercolour
+  washes or ``paint_mode="smudge"`` for opaque gouache / oil strokes.
 """
 
 import os
@@ -27,7 +34,8 @@ from .abr_parser import ABRParser, BrushTip, BrushDynamics
 def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
               use_pressure: bool = True,
               preset_name: Optional[str] = None,
-              masking_tip_override: Optional[str] = None) -> None:
+              masking_tip_override: Optional[str] = None,
+              paint_mode: Optional[str] = None) -> None:
     """Write a Krita Preset (.kpp) file from a *BrushTip*.
 
     The .kpp is a PNG thumbnail with embedded preset XML.  The brush
@@ -46,7 +54,15 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
         When True (default), enable pressure sensitivity for brush size.
     preset_name : str, optional
         Override name for the preset.  When ``None``, uses ``tip.name``.
+    paint_mode : str, optional
+        ``None`` or ``"pixel"`` → paintbrush engine (default).
+        ``"smudge"`` → colorsmudge engine (gouache / oil — opaque mixing).
+        ``"wash"`` → colorsmudge engine (watercolour — translucent washes).
     """
+    if paint_mode in ("smudge", "wash"):
+        return _write_kpp_colorsmudge(filepath, tip, invert, use_pressure,
+                                      preset_name, paint_mode)
+
     name = preset_name or tip.name or "Imported Brush"
     safe = _sanitize_filename(name)
     tip_filename = f"{safe}.gbr"
@@ -695,6 +711,206 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
     ])
 
     parts = [f'<Preset name="{esc_name}" paintopid="paintbrush">']
+    for pname, pval in params:
+        parts.append(
+            f' <param name="{pname}" type="string">'
+            f'<![CDATA[{pval}]]></param>'
+        )
+    parts.append(' </Preset>')
+    return " ".join(parts)
+
+
+# ------------------------------------------------------------------ #
+#  Color-smudge preset writer (gouache / oil / watercolour)            #
+# ------------------------------------------------------------------ #
+
+def _write_kpp_colorsmudge(filepath: str, tip: BrushTip, invert: bool,
+                           use_pressure: bool, preset_name: Optional[str],
+                           paint_mode: str) -> None:
+    """Write a .kpp using the ``colorsmudge`` engine."""
+    name = preset_name or tip.name or "Imported Brush"
+    safe = _sanitize_filename(name)
+    tip_filename = f"{safe}.gbr"
+
+    size = float(max(tip.width, tip.height, 1))
+    spacing = max(0.01, tip.spacing / 100.0)
+    dyn: Optional[BrushDynamics] = tip.dynamics
+    opacity = (dyn.opacity / 100.0) if dyn else 1.0
+
+    preset_xml = _make_colorsmudge_xml(
+        name=name,
+        tip_filename=tip_filename,
+        size=size,
+        spacing=spacing,
+        opacity=opacity,
+        use_pressure=use_pressure,
+        paint_mode=paint_mode,
+    )
+
+    png_bytes = _make_kpp_png(tip, invert, preset_xml)
+    _ensure_dir(filepath)
+    with open(filepath, 'wb') as fh:
+        fh.write(png_bytes)
+
+
+def _make_colorsmudge_xml(name: str, tip_filename: str, size: float,
+                          spacing: float, opacity: float,
+                          use_pressure: bool, paint_mode: str) -> str:
+    """Build Krita 5.x preset XML for the ``colorsmudge`` engine.
+
+    *paint_mode* controls the smudge/colour balance:
+
+    * ``"smudge"`` — opaque gouache/oil: high colour rate, moderate
+      smudge rate, paint covers layers below and mixes on canvas.
+    * ``"wash"`` — translucent watercolour: low colour rate, higher
+      smudge rate, strokes layer transparently with fringe effects.
+    """
+    esc_name = _xml_esc(name)
+
+    # Brush definition — reference the .gbr file
+    brush_def = (
+        f'<Brush type="gbr_brush" BrushVersion="2"'
+        f' filename="{_xml_esc(tip_filename)}"'
+        f' spacing="{spacing:.4f}"'
+        f' useAutoSpacing="0" autoSpacingCoeff="1"'
+        f' angle="0" scale="1"'
+        f' ColorAsMask="1" AdjustmentMidPoint="127"'
+        f' BrightnessAdjustment="0" ContrastAdjustment="0"'
+        f' preserveLightness="0"/>'
+    )
+
+    # Sensor helper
+    def _sensor(sensor_id="pressure", curve_pts=None):
+        if curve_pts:
+            c = ";".join(f"{x},{y}" for x, y in curve_pts) + ";"
+            return (f'<!DOCTYPE params> <params id="{sensor_id}">'
+                    f' <curve>{c}</curve> </params> ')
+        return f'<!DOCTYPE params> <params id="{sensor_id}"/> '
+
+    linear = [(0, 0), (1, 1)]
+    default_sensor = _sensor("pressure", linear)
+
+    # Mode-specific tuning — based on Krita's built-in wet-paint and
+    # watercolour presets.
+    if paint_mode == "wash":
+        # Watercolour: translucent, more smudging, lower colour rate
+        color_rate_val = "0.5"
+        smudge_rate_val = "1"
+        smudge_radius_val = "0.41"
+        smudge_rate_curve = [(0, 0.056), (0.55, 0.537), (1, 1)]
+        opacity_val = f"{opacity:.4f}"
+    else:
+        # Gouache/oil: opaque, full colour rate, moderate smudge
+        color_rate_val = "1"
+        smudge_rate_val = "1"
+        smudge_radius_val = "0.41"
+        smudge_rate_curve = [(0, 0.08), (0.13, 0.285), (0.71, 1), (1, 1)]
+        opacity_val = f"{opacity:.4f}"
+
+    # Size sensor
+    if use_pressure:
+        size_sensor = _sensor("pressure", linear)
+        pressure_size = "true"
+        size_use_curve = "true"
+    else:
+        size_sensor = _sensor("pressure")
+        pressure_size = "false"
+        size_use_curve = "false"
+
+    # Opacity sensor — gentle ramp so light pressure still paints
+    opacity_curve = [(0, 0.15), (0.06, 0.26), (0.17, 0.42),
+                     (0.23, 0.48), (0.30, 0.53), (1, 1)]
+    opacity_sensor = _sensor("pressure", opacity_curve)
+
+    params = [
+        # Colour rate (how much foreground colour is deposited)
+        ("ColorRateSensor", _sensor("pressure", linear)),
+        ("ColorRateUseCurve", "false"),
+        ("ColorRateUseSameCurve", "true"),
+        ("ColorRateValue", color_rate_val),
+        ("ColorRatecurveMode", "0"),
+        ("CompositeOp", "normal"),
+        ("EraserMode", "false"),
+        ("GradientSensor", _sensor("pressure")),
+        ("GradientUseCurve", "true"),
+        ("GradientUseSameCurve", "true"),
+        ("GradientValue", "1"),
+        ("GradientcurveMode", "0"),
+        ("HorizontalMirrorEnabled", "false"),
+        ("KisPrecisionOption/AutoPrecisionEnabled", "false"),
+        ("KisPrecisionOption/DeltaValue", "15"),
+        ("KisPrecisionOption/SizeToStartFrom", "0"),
+        ("KisPrecisionOption/precisionLevel", "5"),
+        ("MergedPaint", "false"),
+        ("MirrorSensor", _sensor("pressure")),
+        ("MirrorUseCurve", "true"),
+        ("MirrorUseSameCurve", "true"),
+        ("MirrorValue", "1"),
+        ("MirrorcurveMode", "0"),
+        # Opacity — pressure-sensitive with gentle ramp
+        ("OpacitySensor", opacity_sensor),
+        ("OpacityUseCurve", "true"),
+        ("OpacityUseSameCurve", "true"),
+        ("OpacityValue", opacity_val),
+        ("OpacityVersion", "2"),
+        ("OpacitycurveMode", "0"),
+        ("PaintOpSettings/updateSpacingBetweenDabs", "false"),
+        ("PressureColorRate", "true"),
+        ("PressureGradient", "false"),
+        ("PressureMirror", "false"),
+        ("PressureRotation", "false"),
+        ("PressureScatter", "false"),
+        ("PressureSize", pressure_size),
+        ("PressureSmudgeRadius", "true"),
+        ("PressureSmudgeRate", "true"),
+        ("PressureSpacing", "false"),
+        ("PressureTexture/Strength/", "false"),
+        ("RotationSensor", _sensor("pressure")),
+        ("RotationUseCurve", "true"),
+        ("RotationUseSameCurve", "true"),
+        ("RotationValue", "1"),
+        ("RotationcurveMode", "0"),
+        ("ScatterSensor", default_sensor),
+        ("ScatterUseCurve", "false"),
+        ("ScatterUseSameCurve", "true"),
+        ("ScatterValue", "1"),
+        ("ScattercurveMode", "0"),
+        ("Scattering/AxisX", "true"),
+        ("Scattering/AxisY", "true"),
+        # Size — pressure
+        ("SizeSensor", size_sensor),
+        ("SizeUseCurve", size_use_curve),
+        ("SizeUseSameCurve", "true"),
+        ("SizeValue", "1"),
+        ("SizecurveMode", "0"),
+        # Smudge radius — how far paint picks up from canvas
+        ("SmudgeRadiusSensor", _sensor("pressure")),
+        ("SmudgeRadiusUseCurve", "false"),
+        ("SmudgeRadiusUseSameCurve", "true"),
+        ("SmudgeRadiusValue", smudge_radius_val),
+        ("SmudgeRadiuscurveMode", "0"),
+        # Smudge rate — how much existing paint is mixed in
+        ("SmudgeRateMode", "1"),
+        ("SmudgeRateSensor", _sensor("pressure", smudge_rate_curve)),
+        ("SmudgeRateUseCurve", "true"),
+        ("SmudgeRateUseSameCurve", "true"),
+        ("SmudgeRateValue", smudge_rate_val),
+        ("SmudgeRatecurveMode", "0"),
+        ("Spacing/Isotropic", "false"),
+        ("SpacingSensor", _sensor("pressure")),
+        ("SpacingUseCurve", "true"),
+        ("SpacingUseSameCurve", "true"),
+        ("SpacingValue", "1"),
+        ("SpacingcurveMode", "0"),
+        ("Texture/Pattern/Enabled", "false"),
+        ("VerticalMirrorEnabled", "false"),
+        ("brush_definition", brush_def + " "),
+        ("paintop", "colorsmudge"),
+        ("requiredBrushFile", tip_filename),
+        ("requiredBrushFilesList", ""),
+    ]
+
+    parts = [f'<Preset name="{esc_name}" paintopid="colorsmudge">']
     for pname, pval in params:
         parts.append(
             f' <param name="{pname}" type="string">'
