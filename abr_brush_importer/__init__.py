@@ -25,7 +25,18 @@ startup-only mode) can be configured via the importer dialog.
 import os
 import sys
 
-from krita import Extension, Krita
+try:
+    from krita import Extension, Krita
+    _HAS_KRITA = True
+except ImportError:
+    # Running outside Krita (pip install, standalone CLI, tests).
+    # Provide a stub so the class definition below still parses.
+    class Extension:  # type: ignore[no-redef]
+        def __init__(self, parent=None): pass
+        def setup(self): pass
+        def createActions(self, window): pass
+    Krita = None  # type: ignore[assignment,misc]
+    _HAS_KRITA = False
 
 # Name of the "magic" drop folder inside the Krita resource directory.
 ABR_BRUSHES_FOLDER = "abr_brushes"
@@ -259,5 +270,6 @@ except ImportError:
     _StartupImportThread = None  # type: ignore[assignment,misc]
 
 
-# Register the extension with Krita
-Krita.instance().addExtension(ABRBrushImporter(Krita.instance()))
+# Register the extension with Krita (only when loaded inside Krita)
+if _HAS_KRITA:
+    Krita.instance().addExtension(ABRBrushImporter(Krita.instance()))
