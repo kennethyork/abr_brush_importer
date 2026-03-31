@@ -34,10 +34,14 @@ Issues = "https://github.com/kennethyork/abr_brush_importer/issues"
 
 [project.scripts]
 abr-import = "standalone:main"
+abr-install-krita = "krita_install:main"
 
 [tool.setuptools]
-py-modules = ["standalone"]
+py-modules = ["standalone", "krita_install"]
 packages = ["abr_brush_importer"]
 
 [tool.setuptools.package-data]
-abr_brush_importer = ["*.py"]
+abr_brush_importer = ["*.py", "*.desktop"]
+
+[tool.setuptools.data-files]
+"." = ["abr_brush_importer.desktop"]
