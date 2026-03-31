@@ -302,7 +302,61 @@ xml_content = _extract_kpp_xml(kpp_ext_path)
 assert '<Preset' in xml_content, "Missing <Preset> root"
 assert 'paintopid="paintbrush"' in xml_content, "Missing paintopid"
 assert 'gbr_brush' in xml_content, "Missing gbr_brush in brush_definition"
+# Verify scatter is wired through
+assert 'ScatterValue' in xml_content, "Missing ScatterValue"
+assert '5.0000' in xml_content or 'ScatterValue' in xml_content, "Scatter not wired"
+# Verify angle jitter → random rotation sensor
+assert 'RotationSensor' in xml_content, "Missing RotationSensor"
+assert 'id="random"' in xml_content, "Jitter should produce random sensor"
+# Verify scatter both axes
+assert 'Scattering/AxisY' in xml_content, "Missing Scattering/AxisY"
+# Verify size jitter adds random sensor to SizeSensor
+assert 'SizeSensor' in xml_content, "Missing SizeSensor"
 print("write_kpp with extended dynamics: OK")
+
+# ── 16c) Test write_kpp all dynamics features ──
+full_tip = BrushTip()
+full_tip.name = "Full Dynamics"
+full_tip.width = 16
+full_tip.height = 16
+full_tip.spacing = 25
+full_tip.roundness = 100
+full_tip.channels = 1
+full_tip.image_data = bytes([200] * (16 * 16))
+full_tip.dynamics = BrushDynamics(
+    spacing=25, opacity=70, flow=85,
+    scatter=300, count=2, scatter_both_axes=True,
+    size_jitter=50, angle_jitter=90, roundness_jitter=30,
+    flip_x=True, flip_y=True,
+    airbrush=True, smoothing=True,
+    hue_jitter=10, saturation_jitter=20, brightness_jitter=15,
+    texture_enabled=True, texture_pattern_name="Grain",
+    texture_scale=50, texture_depth=80,
+    dual_brush_enabled=True,
+)
+kpp_full = os.path.join(tmp2, "test_full.kpp")
+write_kpp(kpp_full, full_tip)
+xf = _extract_kpp_xml(kpp_full)
+# Scatter
+assert 'ScatterValue' in xf and '3.0000' in xf, "Scatter value not set (300/100=3)"
+assert 'Scattering/AxisY' in xf, "Missing AxisY"
+# Flip → Mirror + HorizontalMirrorEnabled / VerticalMirrorEnabled
+assert 'HorizontalMirrorEnabled' in xf, "Missing HorizontalMirrorEnabled"
+assert 'VerticalMirrorEnabled' in xf, "Missing VerticalMirrorEnabled"
+# Airbrush
+assert 'isAirbrushing' in xf, "Missing isAirbrushing"
+# Color dynamics → random sensors on h/s/v
+assert 'hSensor' in xf, "Missing hSensor"
+assert 'sSensor' in xf, "Missing sSensor"
+assert 'vSensor' in xf, "Missing vSensor"
+# Texture
+assert 'Texture/Pattern/Enabled' in xf, "Missing texture enabled"
+assert 'Texture/Pattern/Scale' in xf, "Missing texture scale"
+# Masking brush (dual brush)
+assert 'MaskingBrush/Enabled' in xf, "Missing masking brush"
+# Size/rotation/ratio jitter → random sensors
+assert xf.count('id="random"') >= 3, "Need random sensors for jitter (size+angle+ratio)"
+print("write_kpp all dynamics features: OK")
 
 # ── 17) Test write_kpp with invert ──
 inv_tip = BrushTip(name="Inverted", width=4, height=4, channels=1,

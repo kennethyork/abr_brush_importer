@@ -50,6 +50,21 @@ class BrushDynamics:
     wet_edges: bool = False
     noise: bool = False
     smoothing: bool = False
+    # Color dynamics
+    hue_jitter: int = 0           # 0-100 %
+    saturation_jitter: int = 0    # 0-100 %
+    brightness_jitter: int = 0    # 0-100 %
+    purity: int = 0               # foreground/background mixing, -100..100
+    # Texture / pattern overlay
+    texture_enabled: bool = False
+    texture_pattern_name: str = ""
+    texture_scale: int = 100      # 1-1000 %
+    texture_depth: int = 100      # 0-100 %
+    texture_mode: str = ""        # blend mode string
+    # Airbrush
+    airbrush: bool = False
+    # Scatter axis
+    scatter_both_axes: bool = False
 
 
 @dataclass
@@ -367,11 +382,50 @@ class ABRParser:
             cnt = scatter_desc.get('Cnt ', 1)
             if isinstance(cnt, int):
                 dyn.count = max(1, min(16, cnt))
+            # Both axes flag
+            both = scatter_desc.get('BthA', False)
+            dyn.scatter_both_axes = bool(both)
 
         # Dual brush
         dual = desc.get('DlBr', {})
         if isinstance(dual, dict) and dual:
             dyn.dual_brush_enabled = True
+
+        # Color dynamics
+        color_dyn = desc.get('ClrD', {})
+        if isinstance(color_dyn, dict):
+            val = self._desc_get_num(color_dyn, 'H   ')
+            if val is not None:
+                dyn.hue_jitter = max(0, min(100, int(val)))
+            val = self._desc_get_num(color_dyn, 'Strt')
+            if val is not None:
+                dyn.saturation_jitter = max(0, min(100, int(val)))
+            val = self._desc_get_num(color_dyn, 'Brgh')
+            if val is not None:
+                dyn.brightness_jitter = max(0, min(100, int(val)))
+            val = self._desc_get_num(color_dyn, 'Prty')
+            if val is not None:
+                dyn.purity = max(-100, min(100, int(val)))
+
+        # Texture / pattern overlay
+        texture = desc.get('Txtr', {})
+        if isinstance(texture, dict) and texture:
+            dyn.texture_enabled = True
+            patt = texture.get('Ptrn', {})
+            if isinstance(patt, dict):
+                dyn.texture_pattern_name = str(patt.get('Nm  ', ''))
+            val = self._desc_get_num(texture, 'Scl ')
+            if val is not None:
+                dyn.texture_scale = max(1, min(1000, int(val)))
+            val = self._desc_get_num(texture, 'textureDepth')
+            if val is not None:
+                dyn.texture_depth = max(0, min(100, int(val)))
+            mode = texture.get('Md  ', {})
+            if isinstance(mode, dict):
+                dyn.texture_mode = str(mode.get('value', ''))
+
+        # Airbrush
+        dyn.airbrush = bool(desc.get('usAB', False))
 
         # Toggles
         dyn.wet_edges = bool(desc.get('Wtdg', False))

@@ -79,6 +79,44 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
         dyn.flow_pressure_curve if (dyn and dyn.flow_pressure_curve) else None
     )
 
+    # --- Scatter ---
+    scatter_val = 0.0
+    scatter_count = 1
+    scatter_both = False
+    if dyn and dyn.scatter > 0:
+        scatter_val = dyn.scatter / 100.0  # PS 0-1000% → Krita 0-10
+        scatter_count = dyn.count
+        scatter_both = dyn.scatter_both_axes
+
+    # --- Jitters (size / angle / roundness) ---
+    size_jitter = (dyn.size_jitter / 100.0) if dyn else 0.0
+    angle_jitter = (dyn.angle_jitter / 360.0) if dyn else 0.0
+    roundness_jitter = (dyn.roundness_jitter / 100.0) if dyn else 0.0
+
+    # --- Flip / Mirror ---
+    flip_x = dyn.flip_x if dyn else False
+    flip_y = dyn.flip_y if dyn else False
+
+    # --- Airbrush ---
+    airbrush = dyn.airbrush if dyn else False
+
+    # --- Smoothing ---
+    smoothing = dyn.smoothing if dyn else False
+
+    # --- Color dynamics (hue / saturation / value jitter) ---
+    hue_jitter = (dyn.hue_jitter / 100.0) if dyn else 0.0
+    sat_jitter = (dyn.saturation_jitter / 100.0) if dyn else 0.0
+    val_jitter = (dyn.brightness_jitter / 100.0) if dyn else 0.0
+
+    # --- Texture ---
+    texture_enabled = dyn.texture_enabled if dyn else False
+    texture_pattern = dyn.texture_pattern_name if dyn else ""
+    texture_scale = (dyn.texture_scale / 100.0) if dyn else 1.0
+    texture_depth = (dyn.texture_depth / 100.0) if dyn else 1.0
+
+    # --- Masking brush (dual brush) ---
+    masking_enabled = dyn.dual_brush_enabled if dyn else False
+
     # --- Build XML ---
     preset_xml = _make_preset_xml(
         name=name,
@@ -93,6 +131,24 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
         size_curve=size_curve,
         opacity_curve=opacity_curve,
         flow_curve=flow_curve,
+        scatter_val=scatter_val,
+        scatter_count=scatter_count,
+        scatter_both=scatter_both,
+        size_jitter=size_jitter,
+        angle_jitter=angle_jitter,
+        roundness_jitter=roundness_jitter,
+        flip_x=flip_x,
+        flip_y=flip_y,
+        airbrush=airbrush,
+        smoothing=smoothing,
+        hue_jitter=hue_jitter,
+        sat_jitter=sat_jitter,
+        val_jitter=val_jitter,
+        texture_enabled=texture_enabled,
+        texture_pattern=texture_pattern,
+        texture_scale=texture_scale,
+        texture_depth=texture_depth,
+        masking_enabled=masking_enabled,
     )
 
     # --- Build PNG with embedded zTXt preset ---
@@ -189,6 +245,24 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
                      size_curve: Optional[List[Tuple[float, float]]] = None,
                      opacity_curve: Optional[List[Tuple[float, float]]] = None,
                      flow_curve: Optional[List[Tuple[float, float]]] = None,
+                     scatter_val: float = 0.0,
+                     scatter_count: int = 1,
+                     scatter_both: bool = False,
+                     size_jitter: float = 0.0,
+                     angle_jitter: float = 0.0,
+                     roundness_jitter: float = 0.0,
+                     flip_x: bool = False,
+                     flip_y: bool = False,
+                     airbrush: bool = False,
+                     smoothing: bool = False,
+                     hue_jitter: float = 0.0,
+                     sat_jitter: float = 0.0,
+                     val_jitter: float = 0.0,
+                     texture_enabled: bool = False,
+                     texture_pattern: str = "",
+                     texture_scale: float = 1.0,
+                     texture_depth: float = 1.0,
+                     masking_enabled: bool = False,
                      ) -> str:
     """Build Krita 5.x preset XML in the ``<Preset>`` format."""
 
@@ -204,7 +278,7 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
         f' preserveLightness="0"/>'
     )
 
-    # Sensor helper — format matches Krita's native output (no trailing decimals)
+    # Sensor helper — format matches Krita's native output
     def _sensor(sensor_id="pressure", curve_pts=None):
         if curve_pts:
             c = ";".join(f"{x},{y}" for x, y in curve_pts) + ";"
@@ -212,20 +286,30 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
                     f' <curve>{c}</curve> </params> ')
         return f'<!DOCTYPE params> <params id="{sensor_id}"/> '
 
+    def _multi_sensor(*sensors):
+        """Combine multiple sensor XML strings into one value."""
+        return " ".join(s.strip() for s in sensors) + " "
+
     linear_curve = [(0, 0), (1, 1)]
     default_sensor = _sensor("pressure", linear_curve)
 
-    # Size sensor
+    # ---- Size sensor (pressure + optional random jitter) ----
     if size_curve:
-        size_sensor = _sensor("pressure", size_curve)
+        size_pressure = _sensor("pressure", size_curve)
         pressure_size = "true"
         size_use_curve = "true"
     else:
-        size_sensor = default_sensor
+        size_pressure = default_sensor
         pressure_size = "false"
         size_use_curve = "false"
 
-    # Opacity sensor
+    if size_jitter > 0:
+        size_sensor = _multi_sensor(size_pressure, _sensor("random"))
+        size_use_curve = "true"
+    else:
+        size_sensor = size_pressure
+
+    # ---- Opacity sensor ----
     if opacity_curve:
         opacity_sensor = _sensor("pressure", opacity_curve)
         pressure_opacity = "true"
@@ -235,7 +319,7 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
         pressure_opacity = "false"
         opacity_use_curve = "false"
 
-    # Flow sensor
+    # ---- Flow sensor ----
     if flow_curve:
         flow_sensor = _sensor("pressure", flow_curve)
         flow_use_curve = "true"
@@ -243,11 +327,50 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
         flow_sensor = default_sensor
         flow_use_curve = "false"
 
+    # ---- Rotation sensor (angle jitter → random) ----
+    if angle_jitter > 0:
+        rotation_sensor = _sensor("random")
+        rotation_use_curve = "true"
+    else:
+        rotation_sensor = _sensor("pressure")
+        rotation_use_curve = "true"
+
+    # ---- Ratio sensor (roundness jitter → random) ----
+    if roundness_jitter > 0:
+        ratio_sensor = _multi_sensor(_sensor("pressure"), _sensor("random"))
+        ratio_use_curve = "true"
+    else:
+        ratio_sensor = _sensor("pressure")
+        ratio_use_curve = "true"
+
+    # ---- Scatter sensor ----
+    has_scatter = scatter_val > 0
+    if has_scatter:
+        scatter_sensor = default_sensor
+        scatter_use_curve = "true"
+    else:
+        scatter_sensor = default_sensor
+        scatter_use_curve = "false"
+
+    # ---- Mirror / Flip (per-dab random flip) ----
+    has_flip = flip_x or flip_y
+    if has_flip:
+        mirror_sensor = _sensor("random")
+    else:
+        mirror_sensor = _sensor("pressure")
+
+    # ---- Color dynamics (h/s/v jitter → random sensors) ----
+    h_sensor = _sensor("random") if hue_jitter > 0 else default_sensor
+    s_sensor = _sensor("random") if sat_jitter > 0 else default_sensor
+    v_sensor = _sensor("random") if val_jitter > 0 else default_sensor
+
+    # ---- Smoothing ----
+    smoothing_level = "5" if smoothing else "5"
+    smoothing_delta = "15" if not smoothing else "5"
+
     esc_name = _xml_esc(name)
 
     # Build the full XML matching Krita's native preset format.
-    # Includes Curve*/Custom* params and all sensor groups that
-    # working Krita presets contain.
     params = [
         ("ColorSource/Type", "plain"),
         ("CompositeOp", "normal"),
@@ -288,14 +411,17 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
         ("FlowUseCurve", flow_use_curve),
         ("FlowUseSameCurve", "true"),
         ("FlowValue", f"{flow:.4f}"),
-        ("HorizontalMirrorEnabled", "false"),
+        # Flip X/Y → HorizontalMirrorEnabled / VerticalMirrorEnabled
+        ("HorizontalMirrorEnabled", "true" if flip_x else "false"),
+        # Smoothing options
         ("KisPrecisionOption/AutoPrecisionEnabled", "true"),
-        ("KisPrecisionOption/DeltaValue", "15"),
+        ("KisPrecisionOption/DeltaValue", smoothing_delta),
         ("KisPrecisionOption/SizeToStartFrom", "10"),
-        ("KisPrecisionOption/precisionLevel", "5"),
-        ("MaskingBrush/Enabled", "false"),
-        # Mirror sensor group
-        ("MirrorSensor", _sensor("pressure")),
+        ("KisPrecisionOption/precisionLevel", smoothing_level),
+        # Masking brush (dual brush)
+        ("MaskingBrush/Enabled", "true" if masking_enabled else "false"),
+        # Mirror sensor group (per-dab flip via random sensor)
+        ("MirrorSensor", mirror_sensor),
         ("MirrorUseCurve", "true"),
         ("MirrorUseSameCurve", "true"),
         ("MirrorValue", "1"),
@@ -311,7 +437,8 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
         ("OpacityValue", f"{opacity:.4f}"),
         ("PaintOpAction", "2"),
         ("PaintOpSettings/ignoreSpacing", "false"),
-        ("PaintOpSettings/isAirbrushing", "false"),
+        # Airbrush mode
+        ("PaintOpSettings/isAirbrushing", "true" if airbrush else "false"),
         ("PaintOpSettings/rate", "20"),
         ("PaintOpSettings/updateSpacingBetweenDabs", "false"),
         # Pressure flags for each property
@@ -330,30 +457,30 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
         ("Pressureh", "false"),
         ("Pressures", "false"),
         ("Pressurev", "false"),
-        # Ratio sensor group
-        ("RatioSensor", _sensor("pressure")),
-        ("RatioUseCurve", "true"),
+        # Ratio sensor group (roundness + optional jitter)
+        ("RatioSensor", ratio_sensor),
+        ("RatioUseCurve", ratio_use_curve),
         ("RatioUseSameCurve", "true"),
         ("RatioValue", f"{ratio:.4f}"),
-        # Rotation sensor group
-        ("RotationSensor", _sensor("pressure")),
-        ("RotationUseCurve", "true"),
+        # Rotation sensor group (angle jitter → random)
+        ("RotationSensor", rotation_sensor),
+        ("RotationUseCurve", rotation_use_curve),
         ("RotationUseSameCurve", "true"),
-        ("RotationValue", "1"),
+        ("RotationValue", f"{angle_jitter:.4f}" if angle_jitter > 0 else "1"),
         # Scatter sensor group
-        ("ScatterSensor", default_sensor),
-        ("ScatterUseCurve", "false"),
+        ("ScatterSensor", scatter_sensor),
+        ("ScatterUseCurve", scatter_use_curve),
         ("ScatterUseSameCurve", "true"),
-        ("ScatterValue", "0"),
+        ("ScatterValue", f"{scatter_val:.4f}" if has_scatter else "0"),
         ("Scattering/AxisX", "true"),
-        ("Scattering/AxisY", "false"),
+        ("Scattering/AxisY", "true" if scatter_both else "false"),
         # Sharpness sensor group
         ("Sharpness/threshold", "40"),
         ("SharpnessSensor", default_sensor),
         ("SharpnessUseCurve", "false"),
         ("SharpnessUseSameCurve", "true"),
         ("SharpnessValue", "1"),
-        # Size sensor group
+        # Size sensor group (pressure + optional jitter)
         ("SizeSensor", size_sensor),
         ("SizeUseCurve", size_use_curve),
         ("SizeUseSameCurve", "true"),
@@ -369,28 +496,51 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
         ("SpacingUseCurve", "true"),
         ("SpacingUseSameCurve", "true"),
         ("SpacingValue", "1"),
-        ("Texture/Pattern/Enabled", "false"),
-        ("VerticalMirrorEnabled", "false"),
+        # Texture overlay
+        ("Texture/Pattern/Enabled", "true" if texture_enabled else "false"),
+    ]
+
+    # Add texture params when enabled
+    if texture_enabled:
+        params.extend([
+            ("Texture/Pattern/Scale", f"{texture_scale:.4f}"),
+            ("Texture/Pattern/MaximumOffsetX", "0"),
+            ("Texture/Pattern/MaximumOffsetY", "0"),
+            ("Texture/Pattern/isNormalized", "false"),
+            ("Texture/Pattern/CutoffPolicy", "0"),
+            ("Texture/Pattern/CutoffLeft", "0"),
+            ("Texture/Pattern/CutoffRight", "255"),
+            ("Texture/Pattern/Invert", "false"),
+            ("Texture/Strength/UseSameCurve", "true"),
+            ("Texture/Strength/Sensor", default_sensor),
+            ("Texture/Strength/UseCurve", "true"),
+            ("Texture/Strength/Value", f"{texture_depth:.4f}"),
+            ("Texture/Mode", "0"),
+        ])
+
+    params.extend([
+        # Flip Y → VerticalMirrorEnabled
+        ("VerticalMirrorEnabled", "true" if flip_y else "false"),
         ("brush_definition", brush_def + " "),
-        # h/s/v sensor groups (hue, saturation, value)
-        ("hSensor", default_sensor),
+        # h/s/v sensor groups (color dynamics via random jitter)
+        ("hSensor", h_sensor),
         ("hUseCurve", "true"),
         ("hUseSameCurve", "true"),
-        ("hValue", "1"),
+        ("hValue", f"{hue_jitter:.4f}" if hue_jitter > 0 else "1"),
         ("lodUserAllowed", "true"),
         ("paintop", "paintbrush"),
         ("requiredBrushFile", tip_filename),
         # s sensor group
-        ("sSensor", default_sensor),
+        ("sSensor", s_sensor),
         ("sUseCurve", "true"),
         ("sUseSameCurve", "true"),
-        ("sValue", "1"),
+        ("sValue", f"{sat_jitter:.4f}" if sat_jitter > 0 else "1"),
         # v sensor group
-        ("vSensor", default_sensor),
+        ("vSensor", v_sensor),
         ("vUseCurve", "true"),
         ("vUseSameCurve", "true"),
-        ("vValue", "1"),
-    ]
+        ("vValue", f"{val_jitter:.4f}" if val_jitter > 0 else "1"),
+    ])
 
     parts = [f'<Preset name="{esc_name}" paintopid="paintbrush">']
     for pname, pval in params:
