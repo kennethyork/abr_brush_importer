@@ -47,6 +47,7 @@ class BrushDynamics:
     flow_pressure_curve: List[Tuple[float, float]] = field(default_factory=list)
     dual_brush_enabled: bool = False
     dual_brush_tip_index: int = -1
+    dual_brush_tip_name: str = ""     # name from DlBr.Brsh.Nm (sampled)
     dual_brush_diameter: int = 0
     dual_brush_spacing: int = 25
     dual_brush_scatter: int = 0
@@ -424,6 +425,13 @@ class ABRParser:
             val = self._desc_get_num(dual, 'Hrdn')
             if val is not None:
                 dyn.dual_brush_hardness = max(0, min(100, int(val)))
+
+            # Extract sampled brush name from Brsh sub-descriptor
+            brsh = dual.get('Brsh', {})
+            if isinstance(brsh, dict):
+                nm = brsh.get('Nm  ', '')
+                if isinstance(nm, str) and nm:
+                    dyn.dual_brush_tip_name = nm
 
         # Color dynamics
         color_dyn = desc.get('ClrD', {})

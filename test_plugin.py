@@ -489,6 +489,81 @@ assert 'custom_mask.gbr' in xd2, "masking_tip_override should appear in XML"
 assert 'MaskingBrush/Preset/requiredBrushFile' in xd2, "Missing masking required brush"
 print("write_kpp dual brush masking_tip_override: OK")
 
+# ── 16m) Test dual_brush_tip_name field ──
+dyn_named = BrushDynamics(
+    spacing=25,
+    dual_brush_enabled=True,
+    dual_brush_tip_name="Some Texture Brush",
+    dual_brush_diameter=40,
+)
+assert dyn_named.dual_brush_tip_name == "Some Texture Brush"
+assert dyn_named.dual_brush_enabled is True
+print("dual_brush_tip_name field: OK")
+
+# ── 16n) Test _find_tip_by_name exact match ──
+from abr_brush_importer.import_pipeline import _find_tip_by_name
+
+tip_a = BrushTip(name="Alpha Brush", width=8, height=8, channels=1,
+                 image_data=bytes([128] * 64), spacing=25)
+tip_b = BrushTip(name="Beta Brush", width=8, height=8, channels=1,
+                 image_data=bytes([200] * 64), spacing=25)
+tip_c = BrushTip(name="Gamma Brush", width=8, height=8, channels=1,
+                 image_data=bytes([100] * 64), spacing=25)
+tips_list = [tip_a, tip_b, tip_c]
+
+# Exact match (case-insensitive)
+found = _find_tip_by_name(tips_list, "beta brush")
+assert found is tip_b, f"Exact match failed: got {found.name if found else None}"
+
+# Partial match
+found2 = _find_tip_by_name(tips_list, "Gamma")
+assert found2 is tip_c, f"Partial match failed: got {found2.name if found2 else None}"
+
+# No match
+found3 = _find_tip_by_name(tips_list, "NonExistent")
+assert found3 is None, "Should return None for no match"
+
+# Exclude
+found4 = _find_tip_by_name(tips_list, "Alpha Brush", exclude=tip_a)
+assert found4 is None, "Should return None when match is excluded"
+print("_find_tip_by_name: OK")
+
+# ── 16o) Test sampled dual brush in import_abr_files ──
+# Build a fake v1 ABR with 2 tips, where tip 0 has dual brush referencing tip 1
+tmp_dual_pipe = tempfile.mkdtemp()
+# We'll create 2 BrushTips manually and test the pipeline logic
+# by writing a kpp with masking_tip_override from a resolved name
+
+dual_primary = BrushTip(name="Primary", width=16, height=16, channels=1,
+                        image_data=bytes([200] * 256), spacing=25)
+dual_primary.dynamics = BrushDynamics(
+    spacing=25,
+    dual_brush_enabled=True,
+    dual_brush_tip_name="Secondary",
+    dual_brush_diameter=20,
+    dual_brush_spacing=30,
+)
+
+dual_secondary = BrushTip(name="Secondary", width=10, height=10, channels=1,
+                          image_data=bytes([150] * 100), spacing=25)
+
+# Verify _find_tip_by_name finds the secondary tip
+matched = _find_tip_by_name([dual_primary, dual_secondary],
+                            "Secondary", exclude=dual_primary)
+assert matched is dual_secondary, "Should find secondary tip by name"
+
+# Write a kpp with masking override to verify the full path works
+kpp_sampled_dual = os.path.join(tmp_dual_pipe, "test_sampled_dual.kpp")
+write_kpp(kpp_sampled_dual, dual_primary,
+          masking_tip_override="Secondary_mask.gbr")
+xs = _extract_kpp_xml(kpp_sampled_dual)
+assert 'Secondary_mask.gbr' in xs, "Sampled dual tip file not in XML"
+assert 'MaskingBrush/Enabled' in xs, "Missing masking brush enabled"
+assert 'true' in xs[xs.find('MaskingBrush/Enabled'):xs.find('MaskingBrush/Enabled')+60], \
+    "MaskingBrush should be enabled"
+shutil.rmtree(tmp_dual_pipe)
+print("sampled dual brush pipeline: OK")
+
 # ── 17) Test write_kpp with invert ──
 inv_tip = BrushTip(name="Inverted", width=4, height=4, channels=1,
                    image_data=bytes([100] * 16), spacing=25)

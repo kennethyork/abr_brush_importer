@@ -87,6 +87,27 @@ class ImportResult:
 
 
 # ------------------------------------------------------------------ #
+#  Helpers                                                             #
+# ------------------------------------------------------------------ #
+
+def _find_tip_by_name(tips, name: str, exclude=None):
+    """Find a BrushTip by name (case-insensitive), skipping *exclude*."""
+    needle = name.lower()
+    for tip in tips:
+        if tip is exclude:
+            continue
+        if tip.name and tip.name.lower() == needle:
+            return tip
+    # Partial match fallback
+    for tip in tips:
+        if tip is exclude:
+            continue
+        if tip.name and needle in tip.name.lower():
+            return tip
+    return None
+
+
+# ------------------------------------------------------------------ #
 #  Public API                                                          #
 # ------------------------------------------------------------------ #
 
@@ -157,28 +178,49 @@ def import_abr_files(
                 pixels = bytes(255 - b for b in pixels)
 
             try:
-                # Generate a separate GBR for the dual brush computed tip
+                # Generate a separate GBR for the dual brush tip
                 masking_tip_file = None
                 dyn = tip.dynamics
-                if (dyn and dyn.dual_brush_enabled
-                        and dyn.dual_brush_diameter > 0):
-                    mask_name = f"{safe_name}_mask"
-                    mask_size = max(1, dyn.dual_brush_diameter)
-                    mask_pixels = ABRParser._generate_computed_image(
-                        mask_size,
-                        dyn.dual_brush_roundness,
-                        dyn.dual_brush_angle,
-                        dyn.dual_brush_hardness,
-                    )
-                    mask_path = _unique(
-                        os.path.join(brushes_dir, f"{mask_name}.gbr"))
-                    write_gbr(
-                        mask_path, mask_name,
-                        mask_size, mask_size, mask_pixels,
-                        dyn.dual_brush_spacing, channels=1,
-                    )
-                    written_brush_files.append(mask_path)
-                    masking_tip_file = os.path.basename(mask_path)
+                if dyn and dyn.dual_brush_enabled:
+                    # Try to resolve sampled brush by name first
+                    if dyn.dual_brush_tip_name:
+                        matched = _find_tip_by_name(
+                            brushes, dyn.dual_brush_tip_name, exclude=tip)
+                        if matched is not None:
+                            mask_name = f"{safe_name}_mask"
+                            m_ch = matched.channels
+                            m_pix = (ABRParser.get_grayscale(matched)
+                                     if m_ch > 1 else matched.image_data)
+                            mask_path = _unique(
+                                os.path.join(brushes_dir,
+                                             f"{mask_name}.gbr"))
+                            write_gbr(
+                                mask_path, mask_name,
+                                matched.width, matched.height, m_pix,
+                                dyn.dual_brush_spacing, channels=1,
+                            )
+                            written_brush_files.append(mask_path)
+                            masking_tip_file = os.path.basename(mask_path)
+                    # Fall back to computed brush if no sampled match
+                    if masking_tip_file is None and dyn.dual_brush_diameter > 0:
+                        mask_name = f"{safe_name}_mask"
+                        mask_size = max(1, dyn.dual_brush_diameter)
+                        mask_pixels = ABRParser._generate_computed_image(
+                            mask_size,
+                            dyn.dual_brush_roundness,
+                            dyn.dual_brush_angle,
+                            dyn.dual_brush_hardness,
+                        )
+                        mask_path = _unique(
+                            os.path.join(brushes_dir,
+                                         f"{mask_name}.gbr"))
+                        write_gbr(
+                            mask_path, mask_name,
+                            mask_size, mask_size, mask_pixels,
+                            dyn.dual_brush_spacing, channels=1,
+                        )
+                        written_brush_files.append(mask_path)
+                        masking_tip_file = os.path.basename(mask_path)
 
                 # Always write a .kpp preset to paintoppresets/
                 kpp_path = _unique(os.path.join(presets_dir, f"{safe_name}.kpp"))
