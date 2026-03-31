@@ -38,6 +38,39 @@ except ImportError:
     Krita = None  # type: ignore[assignment,misc]
     _HAS_KRITA = False
 
+
+def _auto_install_krita_plugin():
+    """Silently install the plugin into Krita if Krita is detected."""
+    try:
+        from krita_install import _candidates, install as krita_install
+    except ImportError:
+        return
+    pkg_dir = os.path.dirname(os.path.abspath(__file__))
+    for _label, krita_dir in _candidates():
+        if not os.path.isdir(krita_dir):
+            continue
+        marker = os.path.join(krita_dir, "pykrita", "abr_brush_importer",
+                              ".installed_version")
+        current_version = "1.0.1"
+        if os.path.isfile(marker):
+            try:
+                with open(marker) as f:
+                    if f.read().strip() == current_version:
+                        continue
+            except OSError:
+                pass
+        try:
+            krita_install(krita_dir)
+            os.makedirs(os.path.dirname(marker), exist_ok=True)
+            with open(marker, "w") as f:
+                f.write(current_version + "\n")
+        except OSError:
+            pass
+
+
+if not _HAS_KRITA:
+    _auto_install_krita_plugin()
+
 # Name of the "magic" drop folder inside the Krita resource directory.
 ABR_BRUSHES_FOLDER = "abr_brushes"
 

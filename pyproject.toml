@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "abr-brush-importer"
-version = "1.0.0"
+version = "1.0.1"
 description = "Import Adobe Photoshop .abr brush files into Krita with full dynamics and 17 paint medium modes"
 readme = "README.md"
 license = {text = "MIT"}
