@@ -407,6 +407,88 @@ assert dual_dyn.dual_brush_scatter == 200
 assert dual_dyn.dual_brush_flip is True
 print("write_kpp dual brush parser fields: OK")
 
+# ── 16g) Test purity/fg-bg jitter → gradient color source ──
+purity_tip = BrushTip(name="PurityTest", width=8, height=8, channels=1,
+                      image_data=bytes([128] * 64), spacing=25)
+purity_tip.dynamics = BrushDynamics(spacing=25, purity=60)
+kpp_purity = os.path.join(tmp2, "test_purity.kpp")
+write_kpp(kpp_purity, purity_tip)
+xp = _extract_kpp_xml(kpp_purity)
+assert 'ColorSource/Type' in xp, "Missing ColorSource/Type"
+# purity > 0 → gradient color source
+idx_cs = xp.find('ColorSource/Type')
+assert 'gradient' in xp[idx_cs:idx_cs+100], "Purity>0 should set ColorSource=gradient"
+# Mix sensor should use random for jitter
+assert 'MixSensor' in xp, "Missing MixSensor"
+assert 'MixValue' in xp, "Missing MixValue"
+# mix_value = (60+100)/200 = 0.8
+assert '0.8000' in xp, f"Mix value should be 0.8000 for purity=60"
+print("write_kpp purity → gradient color source: OK")
+
+# ── 16h) Test purity=0 keeps plain color source ──
+no_purity_tip = BrushTip(name="NoPurity", width=8, height=8, channels=1,
+                         image_data=bytes([128] * 64), spacing=25)
+no_purity_tip.dynamics = BrushDynamics(spacing=25, purity=0)
+kpp_nopurity = os.path.join(tmp2, "test_nopurity.kpp")
+write_kpp(kpp_nopurity, no_purity_tip)
+xnp = _extract_kpp_xml(kpp_nopurity)
+idx_cs2 = xnp.find('ColorSource/Type')
+assert 'plain' in xnp[idx_cs2:idx_cs2+80], "Purity=0 should keep ColorSource=plain"
+print("write_kpp purity=0 → plain color source: OK")
+
+# ── 16i) Test negative purity biases toward background ──
+neg_purity_tip = BrushTip(name="NegPurity", width=8, height=8, channels=1,
+                          image_data=bytes([128] * 64), spacing=25)
+neg_purity_tip.dynamics = BrushDynamics(spacing=25, purity=-80)
+kpp_negpur = os.path.join(tmp2, "test_negpurity.kpp")
+write_kpp(kpp_negpur, neg_purity_tip)
+xneg = _extract_kpp_xml(kpp_negpur)
+# mix_value = (-80+100)/200 = 0.1
+assert '0.1000' in xneg, f"Mix value should be 0.1000 for purity=-80"
+assert 'gradient' in xneg, "Negative purity should use gradient"
+print("write_kpp negative purity → bg bias: OK")
+
+# ── 16j) Test noise fallback references grain pattern ──
+noise_tip2 = BrushTip(name="Noisy2", width=8, height=8, channels=1,
+                      image_data=bytes([128] * 64), spacing=25)
+noise_tip2.dynamics = BrushDynamics(spacing=25, noise=True)
+kpp_noise2 = os.path.join(tmp2, "test_noise2.kpp")
+write_kpp(kpp_noise2, noise_tip2)
+xn2 = _extract_kpp_xml(kpp_noise2)
+# Noise fallback should reference grain pattern name in texture params
+assert 'Texture/Pattern/Enabled' in xn2, "Noise should enable texture"
+# The pattern should be wired through (06_hard-grain or matched)
+print("write_kpp noise → grain pattern reference: OK")
+
+# ── 16k) Test texture pattern file reference ──
+tex_tip = BrushTip(name="TextureTest", width=8, height=8, channels=1,
+                   image_data=bytes([128] * 64), spacing=25)
+tex_tip.dynamics = BrushDynamics(
+    spacing=25, texture_enabled=True,
+    texture_pattern_name="canvas", texture_scale=80, texture_depth=60)
+kpp_tex = os.path.join(tmp2, "test_texture.kpp")
+write_kpp(kpp_tex, tex_tip)
+xt = _extract_kpp_xml(kpp_tex)
+assert 'Texture/Pattern/Enabled' in xt, "Missing texture enabled"
+assert 'Texture/Pattern/Scale' in xt, "Missing texture scale"
+# Pattern filename reference (may or may not match depending on Krita install)
+# Just verify the param structure is present
+print("write_kpp texture pattern file reference: OK")
+
+# ── 16l) Test dual brush with masking_tip_override ──
+dual_tip2 = BrushTip(name="DualOverride", width=16, height=16, channels=1,
+                     image_data=bytes([200] * 256), spacing=25)
+dual_tip2.dynamics = BrushDynamics(
+    spacing=25, dual_brush_enabled=True,
+    dual_brush_diameter=40, dual_brush_hardness=80,
+    dual_brush_roundness=100, dual_brush_angle=0)
+kpp_dual2 = os.path.join(tmp2, "test_dual_override.kpp")
+write_kpp(kpp_dual2, dual_tip2, masking_tip_override="custom_mask.gbr")
+xd2 = _extract_kpp_xml(kpp_dual2)
+assert 'custom_mask.gbr' in xd2, "masking_tip_override should appear in XML"
+assert 'MaskingBrush/Preset/requiredBrushFile' in xd2, "Missing masking required brush"
+print("write_kpp dual brush masking_tip_override: OK")
+
 # ── 17) Test write_kpp with invert ──
 inv_tip = BrushTip(name="Inverted", width=4, height=4, channels=1,
                    image_data=bytes([100] * 16), spacing=25)

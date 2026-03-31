@@ -26,7 +26,8 @@ from .abr_parser import ABRParser, BrushTip, BrushDynamics
 
 def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
               use_pressure: bool = True,
-              preset_name: Optional[str] = None) -> None:
+              preset_name: Optional[str] = None,
+              masking_tip_override: Optional[str] = None) -> None:
     """Write a Krita Preset (.kpp) file from a *BrushTip*.
 
     The .kpp is a PNG thumbnail with embedded preset XML.  The brush
@@ -108,6 +109,13 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
     sat_jitter = (dyn.saturation_jitter / 100.0) if dyn else 0.0
     val_jitter = (dyn.brightness_jitter / 100.0) if dyn else 0.0
 
+    # --- Purity (foreground/background mixing) ---
+    purity = dyn.purity if dyn else 0
+    use_gradient = purity != 0
+    # Map PS purity -100..100 → Krita mix 0..1
+    # purity>0 = bias foreground (mix→1), purity<0 = bias bg (mix→0)
+    mix_value = (purity + 100) / 200.0 if use_gradient else 0.5
+
     # --- Texture ---
     texture_enabled = dyn.texture_enabled if dyn else False
     texture_pattern = dyn.texture_pattern_name if dyn else ""
@@ -123,6 +131,7 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
     masking_flip = False
     masking_ratio = 1.0
     masking_angle = 0
+    masking_tip = masking_tip_override or tip_filename
     if dyn and dyn.dual_brush_enabled:
         # Map PS blend mode → Krita composite op
         _mode_map = {
@@ -151,10 +160,13 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
         texture_enabled = True
         texture_scale = 0.15   # fine grain
         texture_depth = 0.30   # subtle
-        texture_pattern = ""   # use default; no specific pattern
+        texture_pattern = "06_hard-grain"  # grain pattern approximates PS noise
 
     # --- Wet edges → softness + darken edge simulation ---
     wet_edges = dyn.wet_edges if dyn else False
+
+    # --- Resolve texture pattern filename ---
+    texture_pattern_file = _resolve_pattern_filename(texture_pattern) if texture_enabled else ""
 
     # --- Build XML ---
     preset_xml = _make_preset_xml(
@@ -185,11 +197,12 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
         val_jitter=val_jitter,
         texture_enabled=texture_enabled,
         texture_pattern=texture_pattern,
+        texture_pattern_file=texture_pattern_file,
         texture_scale=texture_scale,
         texture_depth=texture_depth,
         masking_enabled=masking_enabled,
         masking_composite=masking_composite,
-        masking_tip_filename=tip_filename,
+        masking_tip_filename=masking_tip,
         masking_scatter=masking_scatter,
         masking_scatter_both=masking_scatter_both,
         masking_spacing=masking_spacing,
@@ -197,6 +210,8 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
         masking_ratio=masking_ratio,
         masking_angle=masking_angle,
         wet_edges=wet_edges,
+        use_gradient=use_gradient,
+        mix_value=mix_value,
     )
 
     # --- Build PNG with embedded zTXt preset ---
@@ -308,6 +323,7 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
                      val_jitter: float = 0.0,
                      texture_enabled: bool = False,
                      texture_pattern: str = "",
+                     texture_pattern_file: str = "",
                      texture_scale: float = 1.0,
                      texture_depth: float = 1.0,
                      masking_enabled: bool = False,
@@ -320,6 +336,8 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
                      masking_ratio: float = 1.0,
                      masking_angle: int = 0,
                      wet_edges: bool = False,
+                     use_gradient: bool = False,
+                     mix_value: float = 0.5,
                      ) -> str:
     """Build Krita 5.x preset XML in the ``<Preset>`` format."""
 
@@ -421,6 +439,12 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
     s_sensor = _sensor("random") if sat_jitter > 0 else default_sensor
     v_sensor = _sensor("random") if val_jitter > 0 else default_sensor
 
+    # ---- Mix sensor (purity / fg-bg jitter) ----
+    if use_gradient:
+        mix_sensor = _sensor("random")
+    else:
+        mix_sensor = default_sensor
+
     # ---- Smoothing ----
     smoothing_level = "5" if smoothing else "5"
     smoothing_delta = "15" if not smoothing else "5"
@@ -429,7 +453,7 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
 
     # Build the full XML matching Krita's native preset format.
     params = [
-        ("ColorSource/Type", "plain"),
+        ("ColorSource/Type", "gradient" if use_gradient else "plain"),
         ("CompositeOp", "normal"),
         # Curve* — "same curve" fallback for each sensor group
         ("CurveDarken", "0,0;1,1;"),
@@ -547,11 +571,11 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
         ("MirrorUseCurve", "true"),
         ("MirrorUseSameCurve", "true"),
         ("MirrorValue", "1"),
-        # Mix sensor group
-        ("MixSensor", default_sensor),
+        # Mix sensor group (fg/bg mixing via purity)
+        ("MixSensor", mix_sensor),
         ("MixUseCurve", "true"),
         ("MixUseSameCurve", "true"),
-        ("MixValue", "1"),
+        ("MixValue", f"{mix_value:.4f}" if use_gradient else "1"),
         # Opacity sensor group
         ("OpacitySensor", opacity_sensor),
         ("OpacityUseCurve", opacity_use_curve),
@@ -624,7 +648,7 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
 
     # Add texture params when enabled
     if texture_enabled:
-        params.extend([
+        tex_params = [
             ("Texture/Pattern/Scale", f"{texture_scale:.4f}"),
             ("Texture/Pattern/MaximumOffsetX", "0"),
             ("Texture/Pattern/MaximumOffsetY", "0"),
@@ -633,12 +657,18 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
             ("Texture/Pattern/CutoffLeft", "0"),
             ("Texture/Pattern/CutoffRight", "255"),
             ("Texture/Pattern/Invert", "false"),
+        ]
+        if texture_pattern_file:
+            tex_params.append(
+                ("Texture/Pattern/PatternFileName", texture_pattern_file))
+        tex_params.extend([
             ("Texture/Strength/UseSameCurve", "true"),
             ("Texture/Strength/Sensor", default_sensor),
             ("Texture/Strength/UseCurve", "true"),
             ("Texture/Strength/Value", f"{texture_depth:.4f}"),
             ("Texture/Mode", "0"),
         ])
+        params.extend(tex_params)
 
     params.extend([
         # Flip Y → VerticalMirrorEnabled
@@ -682,6 +712,44 @@ def _xml_esc(text: str) -> str:
     """Escape text for use in XML attribute values."""
     return (text.replace('&', '&amp;').replace('<', '&lt;')
                 .replace('>', '&gt;').replace('"', '&quot;'))
+
+
+def _resolve_pattern_filename(pattern_name: str) -> str:
+    """Try to find a matching Krita pattern file for the given PS pattern name.
+
+    Searches the standard Krita patterns directories for files whose
+    stem (without extension) contains the pattern name (case-insensitive).
+    Returns the filename (not full path) if found, empty string otherwise.
+    """
+    if not pattern_name:
+        return ""
+
+    import glob as _glob
+
+    # Standard Krita pattern directories (Flatpak + system)
+    search_dirs = [
+        os.path.expanduser("~/.var/app/org.kde.krita/data/krita/patterns"),
+        os.path.expanduser("~/.local/share/krita/patterns"),
+        "/usr/share/krita/patterns",
+    ]
+
+    needle = pattern_name.lower().replace(" ", "").replace("_", "")
+    best_match = ""
+
+    for d in search_dirs:
+        if not os.path.isdir(d):
+            continue
+        for entry in os.listdir(d):
+            stem = os.path.splitext(entry)[0].lower().replace(" ", "").replace("_", "")
+            # Exact stem match
+            if stem == needle:
+                return entry
+            # Partial match (PS name is substring of Krita pattern name or vice versa)
+            if needle in stem or stem in needle:
+                if not best_match or len(entry) < len(best_match):
+                    best_match = entry
+
+    return best_match
 
 
 def _sanitize_filename(name: str) -> str:

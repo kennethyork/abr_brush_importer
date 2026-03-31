@@ -157,6 +157,29 @@ def import_abr_files(
                 pixels = bytes(255 - b for b in pixels)
 
             try:
+                # Generate a separate GBR for the dual brush computed tip
+                masking_tip_file = None
+                dyn = tip.dynamics
+                if (dyn and dyn.dual_brush_enabled
+                        and dyn.dual_brush_diameter > 0):
+                    mask_name = f"{safe_name}_mask"
+                    mask_size = max(1, dyn.dual_brush_diameter)
+                    mask_pixels = ABRParser._generate_computed_image(
+                        mask_size,
+                        dyn.dual_brush_roundness,
+                        dyn.dual_brush_angle,
+                        dyn.dual_brush_hardness,
+                    )
+                    mask_path = _unique(
+                        os.path.join(brushes_dir, f"{mask_name}.gbr"))
+                    write_gbr(
+                        mask_path, mask_name,
+                        mask_size, mask_size, mask_pixels,
+                        dyn.dual_brush_spacing, channels=1,
+                    )
+                    written_brush_files.append(mask_path)
+                    masking_tip_file = os.path.basename(mask_path)
+
                 # Always write a .kpp preset to paintoppresets/
                 kpp_path = _unique(os.path.join(presets_dir, f"{safe_name}.kpp"))
                 write_kpp(
@@ -164,6 +187,7 @@ def import_abr_files(
                     invert=options.invert,
                     use_pressure=options.use_pressure,
                     preset_name=safe_name,
+                    masking_tip_override=masking_tip_file,
                 )
                 written_preset_files.append(kpp_path)
 
