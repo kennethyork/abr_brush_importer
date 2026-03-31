@@ -191,7 +191,7 @@ with ABR files:
 ## Feature coverage at a glance
 
 | Feature | **This Plugin (v1.0.2)** | **Krita Built-in** | **Other Krita Plugins** | **Photoshop** |
-|---|:---:|:---:|:---:|:---:|
+| --- | :---: | :---: | :---: | :---: |
 | Brush tip extraction (v1–v10) | ✅ Full | ✅ Partial (tips only) | ✅ Tips only | ✅ |
 | Computed brushes (ellipse+hardness) | ✅ | ❌ | ❌ | ✅ |
 | Sampled brushes (RGB/RGBA/Gray) | ✅ | ✅ Gray only | ✅ Gray only | ✅ |
@@ -220,7 +220,7 @@ with ABR files:
 | Cross-platform (Linux/Mac/Win) | ✅ | ✅ | Varies | ✅ |
 
 | Solution | Feature Coverage |
-|---|---|
+| --- | --- |
 | **This plugin** | **~97%** |
 | Photoshop (native) | 100% |
 | Krita built-in import | ~15% (tips only, no dynamics) |
