@@ -13,6 +13,7 @@ charcoal, and more.
 - [Paint medium modes](#paint-medium-modes)
 - [Comparison with GIMP's built-in ABR importer](#comparison-with-gimps-built-in-abr-importer)
 - [Comparison with Photoshop](#comparison-with-photoshop)
+- [Feature coverage at a glance](#feature-coverage-at-a-glance)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Usage](#usage)
@@ -161,7 +162,7 @@ import dialog. Any ABR brush shape can be imported as any medium type.
 | Import from URL | ❌ | ✅ |
 | Import-tracking database | ❌ | ✅ |
 
-**Overall fidelity: ~95% vs GIMP's ~5%** — GIMP extracts only the raw stamp
+**Overall fidelity: ~97% vs GIMP's ~5%** — GIMP extracts only the raw stamp
 shape; this plugin preserves virtually all ABR brush behaviour.
 
 ---
@@ -174,7 +175,7 @@ with ABR files:
 
 | Capability | Photoshop | This plugin |
 | ---------- | :-------: | :---------: |
-| Load ABR brush tips | ✅ native | ✅ ~95% fidelity |
+| Load ABR brush tips | ✅ native | ✅ ~97% fidelity |
 | ABR dynamics (curves, scatter, jitter) | ✅ native | ✅ mapped to Krita sensors |
 | Dual brush | ✅ native | ✅ masking brush |
 | **Use ABR tip as oil/gouache/watercolour** | ❌ must switch to Mixer Brush | ✅ one-click import |
@@ -187,6 +188,49 @@ with ABR files:
 
 ---
 
+## Feature coverage at a glance
+
+| Feature | **This Plugin (v1.0.2)** | **Krita Built-in** | **Other Krita Plugins** | **Photoshop** |
+|---|:---:|:---:|:---:|:---:|
+| Brush tip extraction (v1–v10) | ✅ Full | ✅ Partial (tips only) | ✅ Tips only | ✅ |
+| Computed brushes (ellipse+hardness) | ✅ | ❌ | ❌ | ✅ |
+| Sampled brushes (RGB/RGBA/Gray) | ✅ | ✅ Gray only | ✅ Gray only | ✅ |
+| Preset generation (.kpp) | ✅ Auto | ❌ Manual setup | ❌ | ✅ Auto |
+| Pressure → size curve | ✅ | ❌ | ❌ | ✅ |
+| Pressure → opacity curve | ✅ | ❌ | ❌ | ✅ |
+| Pressure → flow curve | ✅ | ❌ | ❌ | ✅ |
+| Shape dynamics (size/angle/roundness jitter) | ✅ | ❌ | ❌ | ✅ |
+| Scattering (amount + count + axes) | ✅ | ❌ | ❌ | ✅ |
+| Color dynamics (H/S/B jitter + fg-bg) | ✅ | ❌ | ❌ | ✅ |
+| Texture overlay (pattern + scale + depth) | ✅ | ❌ | ❌ | ✅ |
+| Texture blend mode (19 PS modes mapped) | ✅ | ❌ | ❌ | ✅ |
+| Soft texturing (PS compatibility) | ✅ | ❌ | ❌ | ✅ |
+| Dual brush / masking brush | ✅ | ❌ | ❌ | ✅ |
+| Airbrush mode | ✅ | ❌ | ❌ | ✅ |
+| Flip X/Y per dab | ✅ | ❌ | ❌ | ✅ |
+| Smoothing / stroke stabiliser | ✅ | ❌ | ❌ | ✅ |
+| Spacing / angle / roundness | ✅ | ✅ | ✅ | ✅ |
+| Wet edges | ⚠️ Approximated | ❌ | ❌ | ✅ |
+| Procedural noise | ⚠️ Grain fallback | ❌ | ❌ | ✅ |
+| 17 paint medium modes | ✅ | ❌ | ❌ | N/A |
+| Bundle generation | ✅ | ❌ | ❌ | N/A |
+| Auto-import on startup | ✅ Drop folder | ❌ | ❌ | N/A |
+| pip install (PyPI) | ✅ | ❌ | ❌ | N/A |
+| CLI converter (`abr-import`) | ✅ | ❌ | ❌ | ❌ |
+| Cross-platform (Linux/Mac/Win) | ✅ | ✅ | Varies | ✅ |
+
+| Solution | Feature Coverage |
+|---|---|
+| **This plugin** | **~97%** |
+| Photoshop (native) | 100% |
+| Krita built-in import | ~15% (tips only, no dynamics) |
+| Other Krita plugins | ~15–20% |
+
+> The remaining ~3% gap is due to Krita engine limitations (no native wet edges
+> or procedural per-dab noise) — no plugin can close it.
+
+---
+
 ## Requirements
 
 - Krita 5.x with Python scripting enabled
@@ -196,6 +240,21 @@ with ABR files:
 ---
 
 ## Installation
+
+### pip (recommended)
+
+```bash
+pip install abr-brush-importer
+```
+
+This installs the CLI converter (`abr-import`) and automatically detects and
+installs the Krita plugin on first use. You can also manually trigger the Krita
+install:
+
+```bash
+abr-install-krita          # auto-detect Krita and install
+abr-install-krita --list   # show detected Krita locations
+```
 
 ### Linux — native Krita
 
