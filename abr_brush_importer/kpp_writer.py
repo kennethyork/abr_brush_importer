@@ -68,9 +68,13 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
     else:
         size_curve = None
 
-    opacity_curve: Optional[List[Tuple[float, float]]] = (
-        dyn.opacity_pressure_curve if (dyn and dyn.opacity_pressure_curve) else None
-    )
+    if dyn and dyn.opacity_pressure_curve:
+        opacity_curve: Optional[List[Tuple[float, float]]] = dyn.opacity_pressure_curve
+    elif use_pressure:
+        opacity_curve = [(0.0, 0.0), (1.0, 1.0)]
+    else:
+        opacity_curve = None
+
     flow_curve: Optional[List[Tuple[float, float]]] = (
         dyn.flow_pressure_curve if (dyn and dyn.flow_pressure_curve) else None
     )
@@ -200,85 +204,121 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
         f' preserveLightness="0"/>'
     )
 
-    # Sensor helper
-    def _sensor(curve_pts=None):
+    # Sensor helper — format matches Krita's native output (no trailing decimals)
+    def _sensor(sensor_id="pressure", curve_pts=None):
         if curve_pts:
             c = ";".join(f"{x},{y}" for x, y in curve_pts) + ";"
-            return f'<!DOCTYPE params> <params id="pressure"> <curve>{c}</curve> </params> '
-        return '<!DOCTYPE params> <params id="pressure"/> '
+            return (f'<!DOCTYPE params> <params id="{sensor_id}">'
+                    f' <curve>{c}</curve> </params> ')
+        return f'<!DOCTYPE params> <params id="{sensor_id}"/> '
 
-    default_sensor = _sensor()
-    default_curve_sensor = _sensor([(0, 0), (1, 1)])
+    linear_curve = [(0, 0), (1, 1)]
+    default_sensor = _sensor("pressure", linear_curve)
 
     # Size sensor
     if size_curve:
-        size_sensor = _sensor(size_curve)
+        size_sensor = _sensor("pressure", size_curve)
         pressure_size = "true"
         size_use_curve = "true"
     else:
-        size_sensor = default_curve_sensor
+        size_sensor = default_sensor
         pressure_size = "false"
         size_use_curve = "false"
 
     # Opacity sensor
     if opacity_curve:
-        opacity_sensor = _sensor(opacity_curve)
+        opacity_sensor = _sensor("pressure", opacity_curve)
         pressure_opacity = "true"
         opacity_use_curve = "true"
     else:
-        opacity_sensor = default_curve_sensor
+        opacity_sensor = default_sensor
         pressure_opacity = "false"
         opacity_use_curve = "false"
 
     # Flow sensor
     if flow_curve:
-        flow_sensor = _sensor(flow_curve)
-        pressure_flow = "true"
+        flow_sensor = _sensor("pressure", flow_curve)
         flow_use_curve = "true"
     else:
         flow_sensor = default_sensor
         flow_use_curve = "false"
-        pressure_flow = "false"
 
     esc_name = _xml_esc(name)
 
-    # Build the full XML with all standard params Krita expects.
-    # Every value is wrapped in CDATA inside a <param type="string"> element.
+    # Build the full XML matching Krita's native preset format.
+    # Includes Curve*/Custom* params and all sensor groups that
+    # working Krita presets contain.
     params = [
         ("ColorSource/Type", "plain"),
         ("CompositeOp", "normal"),
+        # Curve* — "same curve" fallback for each sensor group
+        ("CurveDarken", "0,0;1,1;"),
+        ("CurveMirror", "0,0;1,1;"),
+        ("CurveMix", "0,0;1,1;"),
+        ("CurveOpacity", "0,0;1,1;"),
+        ("CurveRotation", "0,0;1,1;"),
+        ("CurveScatter", "0,0;1,1;"),
+        ("CurveSharpness", "0,0;1,1;"),
+        ("CurveSize", "0,0;1,1;"),
+        ("CurveSoftness", "0,0;1,1;"),
+        ("Curveh", "0,0;1,1;"),
+        ("Curves", "0,0;1,1;"),
+        ("Curvev", "0,0;1,1;"),
+        # Custom* — enable custom sensor curves
+        ("CustomDarken", "true"),
+        ("CustomMirror", "true"),
+        ("CustomMix", "true"),
+        ("CustomOpacity", "true"),
+        ("CustomRotation", "true"),
+        ("CustomScatter", "true"),
+        ("CustomSharpness", "true"),
+        ("CustomSize", "true"),
+        ("CustomSoftness", "true"),
+        ("Customh", "true"),
+        ("Customs", "true"),
+        ("Customv", "true"),
+        # Darken sensor group
+        ("DarkenSensor", default_sensor),
+        ("DarkenUseCurve", "true"),
+        ("DarkenUseSameCurve", "true"),
+        ("DarkenValue", "1"),
         ("EraserMode", "false"),
+        # Flow sensor group
         ("FlowSensor", flow_sensor),
         ("FlowUseCurve", flow_use_curve),
         ("FlowUseSameCurve", "true"),
         ("FlowValue", f"{flow:.4f}"),
-        ("FlowcurveMode", "0"),
         ("HorizontalMirrorEnabled", "false"),
         ("KisPrecisionOption/AutoPrecisionEnabled", "true"),
         ("KisPrecisionOption/DeltaValue", "15"),
         ("KisPrecisionOption/SizeToStartFrom", "10"),
         ("KisPrecisionOption/precisionLevel", "5"),
         ("MaskingBrush/Enabled", "false"),
-        ("MirrorSensor", default_sensor),
+        # Mirror sensor group
+        ("MirrorSensor", _sensor("pressure")),
         ("MirrorUseCurve", "true"),
         ("MirrorUseSameCurve", "true"),
         ("MirrorValue", "1"),
-        ("MirrorcurveMode", "0"),
+        # Mix sensor group
+        ("MixSensor", default_sensor),
+        ("MixUseCurve", "true"),
+        ("MixUseSameCurve", "true"),
+        ("MixValue", "1"),
+        # Opacity sensor group
         ("OpacitySensor", opacity_sensor),
         ("OpacityUseCurve", opacity_use_curve),
         ("OpacityUseSameCurve", "true"),
         ("OpacityValue", f"{opacity:.4f}"),
-        ("OpacitycurveMode", "0"),
-        ("OpacityVersion", "2"),
         ("PaintOpAction", "2"),
         ("PaintOpSettings/ignoreSpacing", "false"),
         ("PaintOpSettings/isAirbrushing", "false"),
         ("PaintOpSettings/rate", "20"),
         ("PaintOpSettings/updateSpacingBetweenDabs", "false"),
+        # Pressure flags for each property
         ("PressureDarken", "false"),
         ("PressureMirror", "false"),
         ("PressureMix", "false"),
-        ("PressureRate", "false"),
+        ("PressureOpacity", pressure_opacity),
         ("PressureRatio", "false"),
         ("PressureRotation", "false"),
         ("PressureScatter", "false"),
@@ -290,51 +330,66 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
         ("Pressureh", "false"),
         ("Pressures", "false"),
         ("Pressurev", "false"),
-        ("RatioSensor", default_sensor),
+        # Ratio sensor group
+        ("RatioSensor", _sensor("pressure")),
         ("RatioUseCurve", "true"),
         ("RatioUseSameCurve", "true"),
         ("RatioValue", f"{ratio:.4f}"),
-        ("RatiocurveMode", "0"),
-        ("RotationSensor", default_sensor),
+        # Rotation sensor group
+        ("RotationSensor", _sensor("pressure")),
         ("RotationUseCurve", "true"),
         ("RotationUseSameCurve", "true"),
         ("RotationValue", "1"),
-        ("RotationcurveMode", "0"),
+        # Scatter sensor group
         ("ScatterSensor", default_sensor),
-        ("ScatterUseCurve", "true"),
+        ("ScatterUseCurve", "false"),
         ("ScatterUseSameCurve", "true"),
-        ("ScatterValue", "5"),
-        ("ScattercurveMode", "0"),
+        ("ScatterValue", "0"),
         ("Scattering/AxisX", "true"),
-        ("Scattering/AxisY", "true"),
-        ("Sharpness/threshold", "4"),
+        ("Scattering/AxisY", "false"),
+        # Sharpness sensor group
+        ("Sharpness/threshold", "40"),
         ("SharpnessSensor", default_sensor),
-        ("SharpnessUseCurve", "true"),
+        ("SharpnessUseCurve", "false"),
         ("SharpnessUseSameCurve", "true"),
         ("SharpnessValue", "1"),
-        ("SharpnesscurveMode", "0"),
+        # Size sensor group
         ("SizeSensor", size_sensor),
         ("SizeUseCurve", size_use_curve),
         ("SizeUseSameCurve", "true"),
         ("SizeValue", "1"),
-        ("SizecurveMode", "0"),
+        # Softness sensor group
         ("SoftnessSensor", default_sensor),
         ("SoftnessUseCurve", "true"),
         ("SoftnessUseSameCurve", "true"),
         ("SoftnessValue", "1"),
-        ("SoftnesscurveMode", "0"),
+        # Spacing sensor group
         ("Spacing/Isotropic", "false"),
         ("SpacingSensor", default_sensor),
         ("SpacingUseCurve", "true"),
         ("SpacingUseSameCurve", "true"),
         ("SpacingValue", "1"),
-        ("SpacingcurveMode", "0"),
         ("Texture/Pattern/Enabled", "false"),
         ("VerticalMirrorEnabled", "false"),
         ("brush_definition", brush_def + " "),
+        # h/s/v sensor groups (hue, saturation, value)
+        ("hSensor", default_sensor),
+        ("hUseCurve", "true"),
+        ("hUseSameCurve", "true"),
+        ("hValue", "1"),
+        ("lodUserAllowed", "true"),
         ("paintop", "paintbrush"),
         ("requiredBrushFile", tip_filename),
-        ("requiredBrushFilesList", tip_filename),
+        # s sensor group
+        ("sSensor", default_sensor),
+        ("sUseCurve", "true"),
+        ("sUseSameCurve", "true"),
+        ("sValue", "1"),
+        # v sensor group
+        ("vSensor", default_sensor),
+        ("vUseCurve", "true"),
+        ("vUseSameCurve", "true"),
+        ("vValue", "1"),
     ]
 
     parts = [f'<Preset name="{esc_name}" paintopid="paintbrush">']
