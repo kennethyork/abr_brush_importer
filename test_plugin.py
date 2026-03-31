@@ -1052,4 +1052,119 @@ fi = xmk.find('FlowValue')
 assert '1.0' in xmk[fi:fi+40], "marker FlowValue should be 1.0"
 print("paintbrush marker mode: OK")
 
+# ── 16y) Test write_kpp "pencil" mode (fine texture, low flow) ──
+pencil_tip = BrushTip(name="Pencil Test", width=16, height=16, channels=1,
+                      image_data=bytes([140] * 256), spacing=25)
+kpp_pencil = os.path.join(tmp2, "test_pencil.kpp")
+write_kpp(kpp_pencil, pencil_tip, paint_mode="pencil")
+xpe = _extract_kpp_xml(kpp_pencil)
+assert 'paintopid="paintbrush"' in xpe, "pencil should use paintbrush engine"
+tpe = xpe.find('Texture/Pattern/Enabled')
+assert 'true' in xpe[tpe:tpe+80], "pencil should have texture enabled"
+fpe = xpe.find('FlowValue')
+assert '0.4' in xpe[fpe:fpe+40], "pencil FlowValue should be 0.4"
+print("paintbrush pencil mode: OK")
+
+# ── 16z) Test write_kpp "colored_pencil" mode (light texture, medium flow) ──
+cp_tip = BrushTip(name="Colored Pencil Test", width=16, height=16, channels=1,
+                  image_data=bytes([150] * 256), spacing=25)
+kpp_cp = os.path.join(tmp2, "test_colored_pencil.kpp")
+write_kpp(kpp_cp, cp_tip, paint_mode="colored_pencil")
+xcp = _extract_kpp_xml(kpp_cp)
+assert 'paintopid="paintbrush"' in xcp, "colored_pencil should use paintbrush"
+tcp = xcp.find('Texture/Pattern/Enabled')
+assert 'true' in xcp[tcp:tcp+80], "colored_pencil should have texture enabled"
+fcp = xcp.find('FlowValue')
+assert '0.6' in xcp[fcp:fcp+40], "colored_pencil FlowValue should be 0.6"
+print("paintbrush colored_pencil mode: OK")
+
+# ── 16aa) Test write_kpp "conte" mode (dense chalky grain) ──
+conte_tip = BrushTip(name="Conte Test", width=16, height=16, channels=1,
+                     image_data=bytes([160] * 256), spacing=25)
+kpp_conte = os.path.join(tmp2, "test_conte.kpp")
+write_kpp(kpp_conte, conte_tip, paint_mode="conte")
+xco = _extract_kpp_xml(kpp_conte)
+assert 'paintopid="paintbrush"' in xco, "conte should use paintbrush"
+tco = xco.find('Texture/Pattern/Enabled')
+assert 'true' in xco[tco:tco+80], "conte should have texture enabled"
+sco = xco.find('Texture/Pattern/Scale')
+assert '0.5' in xco[sco:sco+80], "conte Texture/Pattern/Scale should be 0.50"
+print("paintbrush conte mode: OK")
+
+# ── 16ab) Test write_kpp "ink" mode (sharp, solid strokes) ──
+ink_tip = BrushTip(name="Ink Test", width=16, height=16, channels=1,
+                   image_data=bytes([255] * 256), spacing=25)
+kpp_ink = os.path.join(tmp2, "test_ink.kpp")
+write_kpp(kpp_ink, ink_tip, paint_mode="ink")
+xik = _extract_kpp_xml(kpp_ink)
+assert 'paintopid="paintbrush"' in xik, "ink should use paintbrush"
+fik = xik.find('FlowValue')
+assert '1.0' in xik[fik:fik+40], "ink FlowValue should be 1.0"
+oik = xik.find('OpacityValue')
+assert '1.0' in xik[oik:oik+40], "ink OpacityValue should be 1.0"
+print("paintbrush ink mode: OK")
+
+# ── 16ac) Test write_kpp "spray" mode (scattered airbrush) ──
+spray_tip = BrushTip(name="Spray Test", width=16, height=16, channels=1,
+                     image_data=bytes([200] * 256), spacing=25)
+kpp_spray = os.path.join(tmp2, "test_spray.kpp")
+write_kpp(kpp_spray, spray_tip, paint_mode="spray")
+xsp = _extract_kpp_xml(kpp_spray)
+assert 'paintopid="paintbrush"' in xsp, "spray should use paintbrush"
+assert 'isAirbrushing' in xsp, "spray should have airbrush param"
+asp = xsp.find('isAirbrushing')
+assert 'true' in xsp[asp:asp+80], "spray should have airbrush enabled"
+print("paintbrush spray mode: OK")
+
+# ── 16ad) Test write_kpp "airbrush_soft" mode (soft airbrush) ──
+ab_tip = BrushTip(name="Airbrush Test", width=16, height=16, channels=1,
+                  image_data=bytes([180] * 256), spacing=25)
+kpp_ab = os.path.join(tmp2, "test_airbrush.kpp")
+write_kpp(kpp_ab, ab_tip, paint_mode="airbrush_soft")
+xab = _extract_kpp_xml(kpp_ab)
+assert 'paintopid="paintbrush"' in xab, "airbrush_soft should use paintbrush"
+assert 'isAirbrushing' in xab, "airbrush_soft should have airbrush param"
+aab = xab.find('isAirbrushing')
+assert 'true' in xab[aab:aab+80], "airbrush_soft should have airbrush enabled"
+print("paintbrush airbrush_soft mode: OK")
+
+# ── 16ae) Test write_kpp "tempera" mode (fast-drying, minimal mixing) ──
+temp_tip = BrushTip(name="Tempera Test", width=16, height=16, channels=1,
+                    image_data=bytes([170] * 256), spacing=25)
+kpp_temp = os.path.join(tmp2, "test_tempera.kpp")
+write_kpp(kpp_temp, temp_tip, paint_mode="tempera")
+xte = _extract_kpp_xml(kpp_temp)
+assert 'paintopid="colorsmudge"' in xte, "tempera should use colorsmudge"
+smte = xte.find('SmudgeRateValue')
+assert '0.15' in xte[smte:smte+80], "tempera SmudgeRateValue should be 0.15"
+crte = xte.find('ColorRateValue')
+assert '1' in xte[crte:crte+50], "tempera ColorRateValue should be 1"
+print("colorsmudge tempera mode: OK")
+
+# ── 16af) Test write_kpp "encaustic" mode (hot wax, thick mixing) ──
+enc_tip = BrushTip(name="Encaustic Test", width=16, height=16, channels=1,
+                   image_data=bytes([190] * 256), spacing=25)
+kpp_enc = os.path.join(tmp2, "test_encaustic.kpp")
+write_kpp(kpp_enc, enc_tip, paint_mode="encaustic")
+xen = _extract_kpp_xml(kpp_enc)
+assert 'paintopid="colorsmudge"' in xen, "encaustic should use colorsmudge"
+sren = xen.find('SmudgeRadiusValue')
+assert '5.0' in xen[sren:sren+80], "encaustic SmudgeRadiusValue should be 5.0"
+cren = xen.find('ColorRateValue')
+assert '0.8' in xen[cren:cren+50], "encaustic ColorRateValue should be 0.8"
+print("colorsmudge encaustic mode: OK")
+
+# ── 16ag) Test write_kpp "fresco" mode (wet plaster) ──
+fres_tip = BrushTip(name="Fresco Test", width=16, height=16, channels=1,
+                    image_data=bytes([165] * 256), spacing=25)
+kpp_fres = os.path.join(tmp2, "test_fresco.kpp")
+write_kpp(kpp_fres, fres_tip, paint_mode="fresco")
+xfr = _extract_kpp_xml(kpp_fres)
+assert 'paintopid="colorsmudge"' in xfr, "fresco should use colorsmudge"
+smfr = xfr.find('SmudgeRateValue')
+assert '0.6' in xfr[smfr:smfr+80], "fresco SmudgeRateValue should be 0.6"
+crfr = xfr.find('ColorRateValue')
+assert '0.7' in xfr[crfr:crfr+50], "fresco ColorRateValue should be 0.7"
+print("colorsmudge fresco mode: OK")
+
 print("\nAll tests passed!")

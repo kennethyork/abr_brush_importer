@@ -11,13 +11,15 @@ Two paint engines are supported:
 * ``paintbrush`` — the default pixel brush engine.  Maps ABR brush
   properties (spacing, opacity, flow, size, angle) directly to Krita's
   preset parameters so dynamics are preserved — something GIMP cannot
-  do with ABR files.  Optional dry-media modes (chalk, charcoal,
-  marker) overlay texture grain or change the composite operation.
+  do with ABR files.  Optional dry-media modes (chalk, charcoal, conté,
+  pencil, colored pencil, ink, spray, airbrush, marker) overlay texture
+  grain or change composite / scatter / airbrush behaviour.
 
 * ``colorsmudge`` — Krita's colour-smudge engine.  Produces presets
   where paint mixes on the canvas.  Modes: ``"smudge"`` (gouache / oil),
   ``"wash"`` (watercolour), ``"oil_thick"`` (heavy palette knife),
-  ``"acrylic"`` (opaque, less mixing).
+  ``"acrylic"`` (opaque, less mixing), ``"tempera"`` (fast-drying, matte),
+  ``"encaustic"`` (hot wax, heavy drag), ``"fresco"`` (wet plaster).
 """
 
 import os
@@ -57,15 +59,26 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
         Override name for the preset.  When ``None``, uses ``tip.name``.
     paint_mode : str, optional
         ``None`` or ``"pixel"`` → paintbrush engine (default).
-        ``"smudge"`` → colorsmudge engine (gouache / oil — opaque mixing).
-        ``"wash"`` → colorsmudge engine (watercolour — translucent washes).
-        ``"oil_thick"`` → colorsmudge engine (heavy oil — palette knife mixing).
-        ``"acrylic"`` → colorsmudge engine (acrylic — opaque, less mixing).
+        ``"smudge"`` → colorsmudge (gouache / oil — opaque mixing).
+        ``"wash"`` → colorsmudge (watercolour — translucent washes).
+        ``"oil_thick"`` → colorsmudge (heavy oil — palette knife).
+        ``"acrylic"`` → colorsmudge (opaque, less mixing).
+        ``"tempera"`` → colorsmudge (fast-drying, minimal mixing).
+        ``"encaustic"`` → colorsmudge (hot wax, thick textured mixing).
+        ``"fresco"`` → colorsmudge (wet plaster, medium mixing).
         ``"chalk"`` → paintbrush with textured grain overlay.
-        ``"charcoal"`` → paintbrush with heavy textured grain overlay.
+        ``"charcoal"`` → paintbrush with heavy textured grain.
+        ``"conte"`` → paintbrush with dense chalky grain.
+        ``"pencil"`` → paintbrush with fine texture, low flow.
+        ``"colored_pencil"`` → paintbrush with light texture, medium flow.
+        ``"ink"`` → paintbrush with sharp edges, full opacity.
+        ``"spray"`` → paintbrush with scatter and airbrush mode.
+        ``"airbrush_soft"`` → paintbrush with airbrush mode, soft edges.
         ``"marker"`` → paintbrush with flat strokes (darken composite).
     """
-    if paint_mode in ("smudge", "wash", "oil_thick", "acrylic"):
+    _colorsmudge_modes = ("smudge", "wash", "oil_thick", "acrylic",
+                          "tempera", "encaustic", "fresco")
+    if paint_mode in _colorsmudge_modes:
         return _write_kpp_colorsmudge(filepath, tip, invert, use_pressure,
                                       preset_name, paint_mode)
 
@@ -184,7 +197,7 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
         texture_depth = 0.30   # subtle
         texture_pattern = "06_hard-grain"  # grain pattern approximates PS noise
 
-    # --- Paint mode overrides for dry textured media ---
+    # --- Paint mode overrides for dry / specialty media ---
     composite_override = "normal"
     flow_override = None  # None means use ABR value
     if paint_mode == "chalk":
@@ -199,6 +212,39 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
         texture_depth = max(texture_depth, 0.90)
         if not texture_pattern:
             texture_pattern = "10_drawed_dotted"
+    elif paint_mode == "conte":
+        texture_enabled = True
+        texture_scale = 0.50
+        texture_depth = max(texture_depth, 0.85)
+        if not texture_pattern:
+            texture_pattern = "10_drawed_dotted"
+    elif paint_mode == "pencil":
+        texture_enabled = True
+        texture_scale = 0.20
+        texture_depth = max(texture_depth, 0.50)
+        flow_override = 0.4
+        if not texture_pattern:
+            texture_pattern = "06_hard-grain"
+    elif paint_mode == "colored_pencil":
+        texture_enabled = True
+        texture_scale = 0.25
+        texture_depth = max(texture_depth, 0.40)
+        flow_override = 0.6
+        if not texture_pattern:
+            texture_pattern = "06_hard-grain"
+    elif paint_mode == "ink":
+        flow_override = 1.0
+        opacity = 1.0
+        opacity_curve = None  # No pressure on opacity — sharp, solid strokes
+    elif paint_mode == "spray":
+        airbrush = True
+        if scatter_val < 1.5:
+            scatter_val = 1.5
+        scatter_both = True
+        opacity = min(opacity, 0.6)
+    elif paint_mode == "airbrush_soft":
+        airbrush = True
+        opacity = min(opacity, 0.8)
     elif paint_mode == "marker":
         composite_override = "darken"
         flow_override = 1.0
@@ -802,6 +848,12 @@ def _make_colorsmudge_xml(name: str, tip_filename: str, size: float,
       thick paint mixing like a painting knife.
     * ``"acrylic"`` — opaque like gouache but with reduced smudge rate,
       simulating fast-drying acrylic with less wet-on-wet mixing.
+    * ``"tempera"`` — egg tempera: fast-drying, minimal mixing, matte
+      finish, high colour rate with almost no smudge.
+    * ``"encaustic"`` — hot wax paint: thick, textured, wide smudge
+      radius like a palette knife but with more drag.
+    * ``"fresco"`` — pigment on wet plaster: medium mixing, slightly
+      translucent, colours absorb into the surface.
     """
     esc_name = _xml_esc(name)
 
@@ -853,6 +905,30 @@ def _make_colorsmudge_xml(name: str, tip_filename: str, size: float,
         smudge_radius_val = "0.2"
         smudge_mode = "0"
         smudge_rate_curve = [(0, 0.0), (0.3, 0.15), (0.7, 0.35), (1, 0.5)]
+        opacity_val = f"{opacity:.4f}"
+    elif paint_mode == "tempera":
+        # Tempera: egg-based, fast-drying, almost no wet mixing, matte
+        color_rate_val = "1"
+        smudge_rate_val = "0.15"
+        smudge_radius_val = "0.1"
+        smudge_mode = "0"
+        smudge_rate_curve = [(0, 0.0), (0.5, 0.08), (1, 0.2)]
+        opacity_val = f"{opacity:.4f}"
+    elif paint_mode == "encaustic":
+        # Encaustic: hot wax, thick, heavy drag mixing, wide pickup
+        color_rate_val = "0.8"
+        smudge_rate_val = "1"
+        smudge_radius_val = "5.0"
+        smudge_mode = "1"
+        smudge_rate_curve = [(0, 0.15), (0.2, 0.5), (0.6, 0.85), (1, 1)]
+        opacity_val = f"{opacity:.4f}"
+    elif paint_mode == "fresco":
+        # Fresco: pigment on wet plaster, medium mixing, slightly translucent
+        color_rate_val = "0.7"
+        smudge_rate_val = "0.6"
+        smudge_radius_val = "0.3"
+        smudge_mode = "1"
+        smudge_rate_curve = [(0, 0.05), (0.4, 0.35), (0.8, 0.6), (1, 0.75)]
         opacity_val = f"{opacity:.4f}"
     else:
         # Gouache/oil: opaque, full colour rate, moderate smudge
