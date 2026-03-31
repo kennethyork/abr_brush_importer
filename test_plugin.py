@@ -978,4 +978,78 @@ print("scan_and_import (skip unchanged): OK")
 
 shutil.rmtree(tmp_scan)
 
+# ── 16t) Test write_kpp "oil_thick" mode (heavy oil / palette knife) ──
+oil_tip = BrushTip(name="Oil Thick Test", width=16, height=16, channels=1,
+                   image_data=bytes([180] * 256), spacing=25)
+kpp_oil = os.path.join(tmp2, "test_oil_thick.kpp")
+write_kpp(kpp_oil, oil_tip, paint_mode="oil_thick")
+xot = _extract_kpp_xml(kpp_oil)
+assert 'paintopid="colorsmudge"' in xot, "oil_thick should use colorsmudge engine"
+# Heavy oil: SmudgeRadiusValue ≈ 9.23 (large pickup)
+sri = xot.find('SmudgeRadiusValue')
+assert '9.23' in xot[sri:sri+80], "oil_thick SmudgeRadiusValue should be 9.23"
+# ColorRateValue should be 0.7
+cri = xot.find('ColorRateValue')
+assert '0.7' in xot[cri:cri+80], "oil_thick ColorRateValue should be 0.7"
+print("colorsmudge oil_thick mode: OK")
+
+# ── 16u) Test write_kpp "acrylic" mode (opaque, less mixing) ──
+acr_tip = BrushTip(name="Acrylic Test", width=16, height=16, channels=1,
+                   image_data=bytes([200] * 256), spacing=25)
+kpp_acr = os.path.join(tmp2, "test_acrylic.kpp")
+write_kpp(kpp_acr, acr_tip, paint_mode="acrylic")
+xac = _extract_kpp_xml(kpp_acr)
+assert 'paintopid="colorsmudge"' in xac, "acrylic should use colorsmudge engine"
+# Acrylic: SmudgeRateValue should be 0.4 (less mixing)
+smri = xac.find('SmudgeRateValue')
+assert '0.4' in xac[smri:smri+80], "acrylic SmudgeRateValue should be 0.4"
+# SmudgeRateMode should be 0
+smi = xac.find('SmudgeRateMode')
+assert '0' in xac[smi:smi+50], "acrylic SmudgeRateMode should be 0"
+print("colorsmudge acrylic mode: OK")
+
+# ── 16v) Test write_kpp "chalk" mode (textured grain) ──
+chalk_tip = BrushTip(name="Chalk Test", width=16, height=16, channels=1,
+                     image_data=bytes([150] * 256), spacing=25)
+kpp_chalk = os.path.join(tmp2, "test_chalk.kpp")
+write_kpp(kpp_chalk, chalk_tip, paint_mode="chalk")
+xch = _extract_kpp_xml(kpp_chalk)
+assert 'paintopid="paintbrush"' in xch, "chalk should use paintbrush engine"
+assert 'Texture/Pattern/Enabled' in xch, "chalk should have texture params"
+tei = xch.find('Texture/Pattern/Enabled')
+assert 'true' in xch[tei:tei+80], "chalk Texture/Pattern/Enabled should be true"
+# CompositeOp should be normal (chalk doesn't change composite)
+ci = xch.find('CompositeOp')
+assert 'normal' in xch[ci:ci+50], "chalk CompositeOp should be normal"
+print("paintbrush chalk mode: OK")
+
+# ── 16w) Test write_kpp "charcoal" mode (heavy grain, smaller scale) ──
+char_tip = BrushTip(name="Charcoal Test", width=16, height=16, channels=1,
+                    image_data=bytes([160] * 256), spacing=25)
+kpp_char = os.path.join(tmp2, "test_charcoal.kpp")
+write_kpp(kpp_char, char_tip, paint_mode="charcoal")
+xcr = _extract_kpp_xml(kpp_char)
+assert 'paintopid="paintbrush"' in xcr, "charcoal should use paintbrush engine"
+tec = xcr.find('Texture/Pattern/Enabled')
+assert 'true' in xcr[tec:tec+80], "charcoal should have texture enabled"
+# CharcoalScale should be 0.35 (smaller than chalk)
+tsc = xcr.find('Texture/Pattern/Scale')
+assert '0.35' in xcr[tsc:tsc+80], "charcoal Texture/Pattern/Scale should be 0.35"
+print("paintbrush charcoal mode: OK")
+
+# ── 16x) Test write_kpp "marker" mode (flat strokes, darken composite) ──
+marker_tip = BrushTip(name="Marker Test", width=16, height=16, channels=1,
+                      image_data=bytes([255] * 256), spacing=25)
+kpp_marker = os.path.join(tmp2, "test_marker.kpp")
+write_kpp(kpp_marker, marker_tip, paint_mode="marker")
+xmk = _extract_kpp_xml(kpp_marker)
+assert 'paintopid="paintbrush"' in xmk, "marker should use paintbrush engine"
+# Marker: CompositeOp should be darken
+cmi = xmk.find('CompositeOp')
+assert 'darken' in xmk[cmi:cmi+50], "marker CompositeOp should be darken"
+# Flow should be 1
+fi = xmk.find('FlowValue')
+assert '1.0' in xmk[fi:fi+40], "marker FlowValue should be 1.0"
+print("paintbrush marker mode: OK")
+
 print("\nAll tests passed!")

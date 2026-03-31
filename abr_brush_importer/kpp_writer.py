@@ -11,12 +11,13 @@ Two paint engines are supported:
 * ``paintbrush`` — the default pixel brush engine.  Maps ABR brush
   properties (spacing, opacity, flow, size, angle) directly to Krita's
   preset parameters so dynamics are preserved — something GIMP cannot
-  do with ABR files.
+  do with ABR files.  Optional dry-media modes (chalk, charcoal,
+  marker) overlay texture grain or change the composite operation.
 
 * ``colorsmudge`` — Krita's colour-smudge engine.  Produces presets
-  where paint mixes on the canvas, giving gouache / oil / watercolour
-  behaviour.  Pass ``paint_mode="wash"`` for translucent watercolour
-  washes or ``paint_mode="smudge"`` for opaque gouache / oil strokes.
+  where paint mixes on the canvas.  Modes: ``"smudge"`` (gouache / oil),
+  ``"wash"`` (watercolour), ``"oil_thick"`` (heavy palette knife),
+  ``"acrylic"`` (opaque, less mixing).
 """
 
 import os
@@ -58,8 +59,13 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
         ``None`` or ``"pixel"`` → paintbrush engine (default).
         ``"smudge"`` → colorsmudge engine (gouache / oil — opaque mixing).
         ``"wash"`` → colorsmudge engine (watercolour — translucent washes).
+        ``"oil_thick"`` → colorsmudge engine (heavy oil — palette knife mixing).
+        ``"acrylic"`` → colorsmudge engine (acrylic — opaque, less mixing).
+        ``"chalk"`` → paintbrush with textured grain overlay.
+        ``"charcoal"`` → paintbrush with heavy textured grain overlay.
+        ``"marker"`` → paintbrush with flat strokes (darken composite).
     """
-    if paint_mode in ("smudge", "wash"):
+    if paint_mode in ("smudge", "wash", "oil_thick", "acrylic"):
         return _write_kpp_colorsmudge(filepath, tip, invert, use_pressure,
                                       preset_name, paint_mode)
 
@@ -178,6 +184,32 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
         texture_depth = 0.30   # subtle
         texture_pattern = "06_hard-grain"  # grain pattern approximates PS noise
 
+    # --- Paint mode overrides for dry textured media ---
+    composite_override = "normal"
+    flow_override = None  # None means use ABR value
+    if paint_mode == "chalk":
+        texture_enabled = True
+        texture_scale = max(texture_scale, 1.0)
+        texture_depth = max(texture_depth, 0.80)
+        if not texture_pattern:
+            texture_pattern = "10_drawed_dotted"
+    elif paint_mode == "charcoal":
+        texture_enabled = True
+        texture_scale = 0.35
+        texture_depth = max(texture_depth, 0.90)
+        if not texture_pattern:
+            texture_pattern = "10_drawed_dotted"
+    elif paint_mode == "marker":
+        composite_override = "darken"
+        flow_override = 1.0
+        opacity = 1.0
+        # Disable pressure on opacity for flat marker strokes
+        opacity_curve = None
+
+    # Apply flow override from paint mode
+    if flow_override is not None:
+        flow = flow_override
+
     # --- Wet edges → softness + darken edge simulation ---
     wet_edges = dyn.wet_edges if dyn else False
 
@@ -198,6 +230,7 @@ def write_kpp(filepath: str, tip: BrushTip, invert: bool = False,
         size_curve=size_curve,
         opacity_curve=opacity_curve,
         flow_curve=flow_curve,
+        composite_op=composite_override,
         scatter_val=scatter_val,
         scatter_count=scatter_count,
         scatter_both=scatter_both,
@@ -324,6 +357,7 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
                      size_curve: Optional[List[Tuple[float, float]]] = None,
                      opacity_curve: Optional[List[Tuple[float, float]]] = None,
                      flow_curve: Optional[List[Tuple[float, float]]] = None,
+                     composite_op: str = "normal",
                      scatter_val: float = 0.0,
                      scatter_count: int = 1,
                      scatter_both: bool = False,
@@ -470,7 +504,7 @@ def _make_preset_xml(name: str, tip_filename: str, size: float,
     # Build the full XML matching Krita's native preset format.
     params = [
         ("ColorSource/Type", "gradient" if use_gradient else "plain"),
-        ("CompositeOp", "normal"),
+        ("CompositeOp", composite_op),
         # Curve* — "same curve" fallback for each sensor group
         ("CurveDarken", "0,0;1,1;"),
         ("CurveMirror", "0,0;1,1;"),
@@ -764,6 +798,10 @@ def _make_colorsmudge_xml(name: str, tip_filename: str, size: float,
       smudge rate, paint covers layers below and mixes on canvas.
     * ``"wash"`` — translucent watercolour: low colour rate, higher
       smudge rate, strokes layer transparently with fringe effects.
+    * ``"oil_thick"`` — heavy oil / palette knife: wide pickup radius,
+      thick paint mixing like a painting knife.
+    * ``"acrylic"`` — opaque like gouache but with reduced smudge rate,
+      simulating fast-drying acrylic with less wet-on-wet mixing.
     """
     esc_name = _xml_esc(name)
 
@@ -797,13 +835,31 @@ def _make_colorsmudge_xml(name: str, tip_filename: str, size: float,
         color_rate_val = "0.5"
         smudge_rate_val = "1"
         smudge_radius_val = "0.41"
+        smudge_mode = "1"
         smudge_rate_curve = [(0, 0.056), (0.55, 0.537), (1, 1)]
+        opacity_val = f"{opacity:.4f}"
+    elif paint_mode == "oil_thick":
+        # Heavy oil / palette knife: thick mixing, wide pickup radius
+        color_rate_val = "0.7"
+        smudge_rate_val = "1"
+        smudge_radius_val = "9.23"
+        smudge_mode = "1"
+        smudge_rate_curve = [(0, 0.08), (0.13, 0.285), (0.71, 1), (1, 1)]
+        opacity_val = f"{opacity:.4f}"
+    elif paint_mode == "acrylic":
+        # Acrylic: opaque, quick-drying — less mixing than oil/gouache
+        color_rate_val = "1"
+        smudge_rate_val = "0.4"
+        smudge_radius_val = "0.2"
+        smudge_mode = "0"
+        smudge_rate_curve = [(0, 0.0), (0.3, 0.15), (0.7, 0.35), (1, 0.5)]
         opacity_val = f"{opacity:.4f}"
     else:
         # Gouache/oil: opaque, full colour rate, moderate smudge
         color_rate_val = "1"
         smudge_rate_val = "1"
         smudge_radius_val = "0.41"
+        smudge_mode = "1"
         smudge_rate_curve = [(0, 0.08), (0.13, 0.285), (0.71, 1), (1, 1)]
         opacity_val = f"{opacity:.4f}"
 
@@ -890,7 +946,7 @@ def _make_colorsmudge_xml(name: str, tip_filename: str, size: float,
         ("SmudgeRadiusValue", smudge_radius_val),
         ("SmudgeRadiuscurveMode", "0"),
         # Smudge rate — how much existing paint is mixed in
-        ("SmudgeRateMode", "1"),
+        ("SmudgeRateMode", smudge_mode),
         ("SmudgeRateSensor", _sensor("pressure", smudge_rate_curve)),
         ("SmudgeRateUseCurve", "true"),
         ("SmudgeRateUseSameCurve", "true"),
